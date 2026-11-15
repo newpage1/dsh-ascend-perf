@@ -1,0 +1,57 @@
+{
+  "name": "dsh-ascend-perf",
+  "version": "1.1.1",
+  "private": false,
+  "type": "module",
+  "description": "DeepSeek Harness 的昇腾 NPU 环境监控与服务部署：从 envs.json 读取多台昇腾主机，只读采集 npu-smi 占用；在选定环境上预览/启动受控 vLLM 容器服务，默认只预览，真实启动需 allowRealExecution + 确认令牌。",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0 || >=0.2.2-alpha.2 <0.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/newpage1/dsh-ascend-perf.git"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "ascend",
+    "npu",
+    "npu-smi",
+    "observability",
+    "vllm",
+    "deployment"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "deploy.js",
+    "deploy-exec.js",
+    "tune.js",
+    "tune-exec.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}
