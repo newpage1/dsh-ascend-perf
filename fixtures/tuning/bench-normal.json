@@ -1,0 +1,18 @@
+{
+  "model_id": "Qwen3-8B",
+  "num_prompts": 1000,
+  "completed": 1000,
+  "duration": 82.4,
+  "total_input_tokens": 512000,
+  "total_output_tokens": 128000,
+  "request_throughput": 12.14,
+  "output_throughput": 1553.4,
+  "total_token_throughput": 7767.0,
+  "median_ttft_ms": 210.5,
+  "p99_ttft_ms": 640.2,
+  "median_tpot_ms": 21.4,
+  "p99_tpot_ms": 38.2,
+  "median_itl_ms": 19.8,
+  "p99_itl_ms": 35.6,
+  "success_rate_pct": 100
+}

@@ -1,0 +1,45 @@
+{
+  "date": "2026-11-06T10:12:30+08:00",
+  "label": "qwen3-8b-w8a8-baseline",
+  "model_id": "Qwen3-8B",
+  "completed": 256,
+  "num_prompts": 256,
+  "duration": 31.02,
+  "request_throughput": 8.26,
+  "output_throughput": 1240.5,
+  "total_token_throughput": 5102.3,
+  "median_ttft_ms": 190.4,
+  "p99_ttft_ms": 620.0,
+  "median_tpot_ms": 24.1,
+  "p99_tpot_ms": 41.2,
+  "median_itl_ms": 24.0,
+  "p99_itl_ms": 43.1,
+  "request_rate": "inf",
+  "max_concurrency": 32,
+  "metadata": {
+    "model_id": "Qwen3-8B",
+    "hardware": "Ascend910 ×8",
+    "cann": "8.1.RC2",
+    "framework": "vllm",
+    "framework_version": "0.30.0",
+    "backend": "vllm-ascend",
+    "tensor_parallel": 8,
+    "dataset": "random",
+    "precision": "w8a8",
+    "workload": {
+      "model": "Qwen3-8B",
+      "cards": 8,
+      "random_input_len": 4096,
+      "random_output_len": 512,
+      "max_concurrency": 32,
+      "request_rate": "inf",
+      "dataset": "random",
+      "precision": "w8a8"
+    }
+  },
+  "hotspots": [
+    { "op_name": "aclnnMatmul", "op_type": "MatMul", "task_type": "AI_CORE", "calls": 8192, "total_duration_us": 8400000, "mean_duration_us": 1025.4 },
+    { "op_name": "aclnnFlashAttention", "op_type": "FlashAttention", "task_type": "AI_CORE", "calls": 4096, "total_duration_us": 5200000, "mean_duration_us": 1269.5 },
+    { "op_name": "aclnnRmsNorm", "op_type": "RmsNorm", "task_type": "AI_VECTOR", "calls": 16384, "total_duration_us": 1900000, "mean_duration_us": 116.0 }
+  ]
+}

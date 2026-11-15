@@ -1,0 +1,4 @@
+{
+  "error": "timeout",
+  "message": "vllm bench serve exceeded bench_timeout_s=90s before finishing; no metrics produced"
+}

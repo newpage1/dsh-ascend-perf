@@ -1,0 +1,25 @@
+=== cpu/mem/disk ===
+192
+               total        used        free      shared  buff/cache   available
+Mem:           2.0Ti       370Gi        97Gi        43Gi       1.5Ti       1.5Ti
+Swap:             0B          0B          0B
+Filesystem                                                Size  Used Avail Use% Mounted on
+devtmpfs                                                  4.0M     0  4.0M   0% /dev
+tmpfs                                                    1006G   33G  974G   4% /dev/shm
+tmpfs                                                    1006G  2.0G 1004G   1% /run
+tmpfs                                                     4.0M     0  4.0M   0% /sys/fs/cgroup
+/dev/sda2                                                 491G  281G  190G  60% /
+tmpfs                                                    1006G  6.6G  999G   1% /tmp
+/dev/sda1                                                1022M  7.9M 1015M   1% /boot/efi
+/dev/sdb                                                  9.7T  9.1T  114G  99% /mnt/sdb
+192.168.0.x:/mnt/sdb/gw/.thinkthread-nfs-csi/skills     9.7T  9.2T   40G 100% /mnt/sdb/gw/.thinkthread-e2e-nomad/storage/skills
+192.168.0.x:/mnt/sdb/gw/.thinkthread-nfs-csi/resources  9.7T  9.2T   40G 100% /mnt/sdb/gw/.thinkthread-e2e-nomad/storage/resources
+192.168.0.x:/mnt/sdb/gw/.thinkthread-nfs-csi/skills     9.7T  9.2T   40G 100% /mnt/sdb/gw/.thinkthread-nfs-client/skills
+192.168.0.x:/mnt/sdb/gw/.thinkthread-nfs-csi/sessions   9.7T  9.2T   40G 100% /mnt/sdb/gw/.thinkthread-nfs-client/sessions
+overlay                                                   9.7T  9.1T  114G  99% /mnt/sdb/docker/overlay2/79de396f0771b82f6ef5fc35a221696105b5c6278f10bb6a7ff960c7effb66e4/merged
+overlay                                                   9.7T  9.1T  114G  99% /mnt/sdb/docker/overlay2/72da6876ef1b60672172543ee04cf3faa7588ab51a3b14368fd8c7f5f2e1228a/merged
+overlay                                                   9.7T  9.1T  114G  99% /mnt/sdb/docker/overlay2/03c05527033f9f142141a04b6a78fdde77e7b7563db6ce81342e524a8df851b1/merged
+overlay                                                   9.7T  9.1T  114G  99% /mnt/sdb/docker/overlay2/18fdcc4cd51449a10972006bc9d563d53277743575ab1778f74dbe6466a5c969/merged
+overlay                                                   9.7T  9.1T  114G  99% /mnt/sdb/docker/overlay2/ffe2e40e67c0c606bb40aac1e39d75c9a3311a0efcbb319682900f221c6da0de/merged
+overlay                                                   9.7T  9.1T  114G  99% /mnt/sdb/docker/overlay2/8465760c94ecfe35747669fcdc82dfb86561f4cf6d8cca2cc9146bcc3022e3c5/merged
+overlay                                                   9.7T  9.1T  114G  99% /mnt/sdb/docker/overlay2/617dfc3920ba0dd195ce529ae140562c6e4c04a024aab3e98580b67017ea2d49/merged

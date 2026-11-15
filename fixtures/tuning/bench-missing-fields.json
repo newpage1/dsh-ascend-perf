@@ -1,0 +1,7 @@
+{
+  "model_id": "Qwen3-8B",
+  "num_prompts": 1000,
+  "output_throughput": 900.0,
+  "median_ttft_ms": 180.0,
+  "success_rate_pct": 100
+}

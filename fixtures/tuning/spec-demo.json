@@ -1,0 +1,20 @@
+{
+  "schema": "dsh-ascend-perf/tune-spec-v1",
+  "label": "Qwen3-8B 演示调优",
+  "executor": "demo",
+  "target_id": "demo-ascend",
+  "profile_id": "demo-vllm-v1",
+  "model_asset_id": "demo-qwen3-8b",
+  "dataset_asset_id": "synthetic-random-v1",
+  "fixed": { "dtype": "bfloat16", "quantization": "none", "tensor_parallel": 1, "device_ids": [0], "served_model_name": "tune-model" },
+  "baseline": { "max_num_seqs": 16, "max_num_batched_tokens": 2048, "gpu_memory_utilization": 0.85, "max_model_len": 4096 },
+  "space": {
+    "max_num_seqs": [8, 16, 32],
+    "max_num_batched_tokens": [1024, 2048, 4096]
+  },
+  "workload": { "input_len": 512, "output_len": 128, "num_prompts": 1000, "max_concurrency": 32, "request_rate_mode": "unbounded", "seed": 42, "stream": true, "ignore_eos": true },
+  "objective": { "metric": "output_throughput_tps", "direction": "higher", "constraints": { "ttft_p99_ms_max": 800, "tpot_p99_ms_max": 60, "success_rate_pct_min": 99 }, "min_gain_pct": 3, "noise_floor_pct": 2, "tie_epsilon_pct": 1 },
+  "search": { "method": "grid", "seed": 42, "max_candidates": 4 },
+  "measurement": { "warmup_runs": 1, "repeats": 3, "confirm_repeats": 2, "confirm_top_k": 1, "baseline_check_every": 3, "baseline_drift_pct_max": 5 },
+  "budget": { "max_trials": 12, "max_bench_invocations": 64, "max_total_seconds": 7200, "max_total_tokens": 50000000, "startup_timeout_s": 180, "bench_timeout_s": 90, "shutdown_grace_s": 10, "cleanup_reserve_s": 30, "max_failed_trials": 2, "max_consecutive_failures": 2, "patience": 6 }
+}

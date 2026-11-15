@@ -1,0 +1,558 @@
+{
+  "_meta": {
+    "schema": "dsh-ascend-perf/npu-snapshot@draft-0.1",
+    "note": "建议结构，最终以 t2 技术方案为准；数据来自 2026-11-07 00:50-00:56 CST 对共享昇腾环境的只读采集（真实输出）",
+    "source": {
+      "mode": "ssh-readonly",
+      "commands": [
+        "npu-smi info",
+        "npu-smi info -t usages -i 0..7",
+        "npu-smi info -t board -i 0",
+        "cat .../version.cfg",
+        "python3 -V",
+        "python3 -m pip show torch torch_npu vllm vllm-ascend",
+        "ps",
+        "ss -ltnp",
+        "docker ps",
+        "nproc/free -h/df -h",
+        "ls"
+      ]
+    },
+    "sanitized": [
+      "SSH 目标地址/端口已省略",
+      "NFS 服务端 IP 已省略",
+      "未采集任何密钥/令牌/环境变量值"
+    ],
+    "parsing_rules": [
+      "卡数 = npu-smi info 中 NPU ID 去重（0–7）= 8；chip 数 = Phy-ID 去重（0–15）= 16；不可按输出行数计数（主表每 chip 两行，末尾还有进程段）。",
+      "采集 usages 必须先 `npu-smi info` 枚举 card，再对每个 card 执行 `npu-smi info -t usages -i N`；裸执行 `npu-smi info -t usages` 返回 exit 215（打印 help，不可当数据）。",
+      "缺失值一律 null：chip1 的 `Power(W)` 为 `-` → null；卡级 power_w/temp_c 未提供 → null（不要填 0，也不要用 chip0 值代替卡级）。",
+      "本次复核（2026-11-07 01:00 CST）：`npu-smi info` exit 0；`-i 0`..`-i 7` 逐条 exit 0；裸 `-t usages` exit 215。"
+    ]
+  },
+  "captured_at": "2026-11-07T00:52:27+08:00",
+  "host": {
+    "hostname": "liteserver-hps-805f-00004.novalocal",
+    "kernel": "5.10.0-182.0.0.95.r2220_157.hce2.aarch64",
+    "arch": "aarch64",
+    "cpu_cores": 192,
+    "memory": {
+      "total": "2.0Ti",
+      "used": "370Gi",
+      "free": "97Gi",
+      "shared": "43Gi",
+      "buff_cache": "1.5Ti",
+      "available": "1.5Ti",
+      "swap": "0B"
+    }
+  },
+  "software": {
+    "npu_smi": "26.1.1",
+    "software_version": "26.1.1",
+    "firmware_version": "9.0.0.9.220",
+    "compatibility": "OK",
+    "cann": "8.1.RC2",
+    "cann_build": "7.7.0.3.220",
+    "python": "3.9.9",
+    "torch": "2.8.0",
+    "torch_npu": "2.8.0.post4",
+    "vllm": null,
+    "vllm_ascend": null,
+    "vllm_version_source": "unknown",
+    "board": {
+      "product_name": "NA",
+      "model": "NA",
+      "serial_number": "NA",
+      "manufacturer": "Huawei",
+      "board_id": "0x71",
+      "main_board_id": "0x18",
+      "pcb_id": "B",
+      "bom_id": "2",
+      "pci_vendor_id": "0x19E5",
+      "pci_device_id": "0xD803",
+      "subsystem_vendor_id": "0x19E5",
+      "subsystem_device_id": "0x3001",
+      "chip_count": 2
+    }
+  },
+  "npu": {
+    "model": "Ascend910",
+    "card_count": 8,
+    "chip_count": 16,
+    "cards": [
+      {
+        "card_id": 0,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 0,
+            "bus_id": "0000:9D:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3131,
+            "hbm_total_mb": 65536,
+            "power_w": 165.5,
+            "temp_c": 49,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 7,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 1,
+            "bus_id": "0000:9F:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2892,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 47,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 7,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      },
+      {
+        "card_id": 1,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 2,
+            "bus_id": "0000:99:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3123,
+            "hbm_total_mb": 65536,
+            "power_w": 163.9,
+            "temp_c": 47,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 3,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 3,
+            "bus_id": "0000:9B:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2891,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 48,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 4,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      },
+      {
+        "card_id": 2,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 4,
+            "bus_id": "0000:95:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3124,
+            "hbm_total_mb": 65536,
+            "power_w": 160.2,
+            "temp_c": 48,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 6,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 5,
+            "bus_id": "0000:97:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2892,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 46,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 3,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      },
+      {
+        "card_id": 3,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 6,
+            "bus_id": "0000:91:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3140,
+            "hbm_total_mb": 65536,
+            "power_w": 163.7,
+            "temp_c": 47,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 3,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 7,
+            "bus_id": "0000:93:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2882,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 47,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 1,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      },
+      {
+        "card_id": 4,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 8,
+            "bus_id": "0000:8D:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3164,
+            "hbm_total_mb": 65536,
+            "power_w": 188.3,
+            "temp_c": 48,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 6,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 9,
+            "bus_id": "0000:8F:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2882,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 46,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 7,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      },
+      {
+        "card_id": 5,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 10,
+            "bus_id": "0000:89:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3124,
+            "hbm_total_mb": 65536,
+            "power_w": 171.3,
+            "temp_c": 48,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 8,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 11,
+            "bus_id": "0000:8B:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2892,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 48,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 2,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      },
+      {
+        "card_id": 6,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 12,
+            "bus_id": "0000:85:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3123,
+            "hbm_total_mb": 65536,
+            "power_w": 165.0,
+            "temp_c": 48,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 7,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 13,
+            "bus_id": "0000:87:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2893,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 48,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 4,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      },
+      {
+        "card_id": 7,
+        "model": "Ascend910",
+        "health": "OK",
+        "power_w": null,
+        "temp_c": null,
+        "hugepages_used": 0,
+        "hugepages_total": 0,
+        "chips": [
+          {
+            "chip_id": 0,
+            "phy_id": 14,
+            "bus_id": "0000:81:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 3126,
+            "hbm_total_mb": 65536,
+            "power_w": 164.8,
+            "temp_c": 45,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 6,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          },
+          {
+            "chip_id": 1,
+            "phy_id": 15,
+            "bus_id": "0000:83:00.0",
+            "aicore_pct": 0,
+            "ddr_used_mb": 0,
+            "ddr_total_mb": 0,
+            "hbm_used_mb": 2893,
+            "hbm_total_mb": 65536,
+            "power_w": null,
+            "temp_c": 46,
+            "hbm_usage_rate_pct": 4,
+            "npu_util_pct": 0,
+            "ctrl_cpu_pct": 2,
+            "aicube_pct": 0,
+            "aivector_pct": 0,
+            "aicpu_pct": 0,
+            "processes": []
+          }
+        ]
+      }
+    ]
+  },
+  "runtime": {
+    "vllm_processes": {
+      "live": 0,
+      "zombie": 20,
+      "note": "宿主 ps 中 20 条 <defunct>，全部为 [vllm] / [VLLM::Worker_PP]；不得计入运行中服务"
+    },
+    "listening_ports_visible_from_host": [
+      "0.0.0.0:443 docker-proxy",
+      "0.0.0.0:30080 systemd",
+      "0.0.0.0:30081 docker-proxy",
+      "0.0.0.0:50088 mooncake_master",
+      "0.0.0.0:9003 mooncake_master",
+      "0.0.0.0:9004 python3",
+      "127.0.0.1:5000 python3",
+      "127.0.0.1:8090 python3",
+      "127.0.0.1:8765 python3",
+      "127.0.0.1:18080 python3",
+      "127.0.0.1:2380 etcd",
+      "127.0.0.1:3080 MainThread",
+      "127.0.0.1:25317 docker-proxy"
+    ],
+    "vllm_endpoint": null,
+    "containers_running": 37,
+    "container_images": {
+      "quay.io/ascend/vllm-ascend:v0.30.0rc1-a3": 7,
+      "quay.nju.edu.cn/ascend/vllm-ascend:v0.23.0-a3": 6,
+      "docker.cnb.cool/capsule_prv/thinkthread_cloud/thinkfabric/kindest-node": 4,
+      "quay.nju.edu.cn/ascend/vllm-ascend:v0.30.0rc2-a3": 3,
+      "7b485a6e417b": 3,
+      "quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0rc1-a3": 2,
+      "quay.nju.edu.cn/ascend/vllm-ascend:v0.30.0-a3": 1,
+      "quay.nju.edu.cn/ascend/vllm-ascend:v0.27.1rc1-a3": 1,
+      "quay.nju.edu.cn/ascend/vllm-ascend": 1,
+      "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5": 1,
+      "quay.io/jd_xllm/xllm-ai:xllm-dev-a3-arm-cann9-20260801": 1,
+      "ram-a-ucm-czt:migrate-20261010": 1,
+      "sijie-dev:base": 1,
+      "qwen-ren-mig:20261031": 1,
+      "docker.cnb.cool/capsule_prv/thinkthread_cloud/third-party/headlamp:v0.45.0": 1,
+      "aiserver-agent:1.2.0": 1,
+      "ce42d65b2403": 1,
+      "7b407f27e8e2": 1
+    }
+  },
+  "storage": {
+    "root": {
+      "size": "491G",
+      "used": "281G",
+      "avail": "190G",
+      "use_pct": 60
+    },
+    "mnt_sdb": {
+      "size": "9.7T",
+      "used": "9.1T",
+      "avail": "114G",
+      "use_pct": 99
+    },
+    "dev_shm": {
+      "size": "1006G",
+      "used": "33G",
+      "use_pct": 4
+    },
+    "tmp": {
+      "size": "1006G",
+      "used": "6.6G",
+      "use_pct": 1
+    },
+    "nfs": "server 地址已脱敏；多个挂载点均 100%"
+  },
+  "models": {
+    "configured_dir": null,
+    "candidate_dirs": [
+      "/mnt/sdb/models"
+    ],
+    "count": 44,
+    "note": "目录 root:root 755，部分子目录 750/700；含 venv 结构（bin/include/lib/pyvenv.cfg/runtime/kernel_meta/log）"
+  },
+  "env": {
+    "collected": false,
+    "reason": "非交互 SSH 未加载 profile，过滤结果为空；未执行登录 shell 以免触发 rc 副作用"
+  }
+}

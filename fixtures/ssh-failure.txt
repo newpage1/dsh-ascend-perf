@@ -1,0 +1,4 @@
+=== SSH probe (read-only) ===
+command: ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 npu-target 'npu-smi info'
+stderr: ssh: connect to host 10.0.0.0 port 22: Connection timed out
+exit: 255

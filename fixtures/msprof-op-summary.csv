@@ -1,0 +1,5 @@
+Op Name,OP Type,Task Type,Task Duration(us),Calls
+aclnnMatmul,"MatMul",AI_CORE,8400000,8192
+aclnnFlashAttention,FlashAttention,AI_CORE,5200000,4096
+aclnnRmsNorm,RmsNorm,AI_VECTOR,1900000,16384
+aclnnAdd,Add,AI_VECTOR,500000,32768

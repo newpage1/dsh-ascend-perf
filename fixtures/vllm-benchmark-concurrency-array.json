@@ -1,0 +1,35 @@
+[
+  {
+    "date": "2026-11-06T09:00:00+08:00",
+    "label": "conc-32",
+    "model_id": "Qwen3-8B",
+    "completed": 256, "num_prompts": 256, "duration": 31.0,
+    "request_throughput": 8.26, "output_throughput": 1240.0, "total_token_throughput": 5100.0,
+    "median_ttft_ms": 190.0, "p99_ttft_ms": 620.0, "median_tpot_ms": 24.0, "p99_tpot_ms": 41.0,
+    "median_itl_ms": 24.0, "p99_itl_ms": 43.0, "request_rate": "inf", "max_concurrency": 32,
+    "metadata": { "cann": "8.1.RC2", "framework": "vllm", "framework_version": "0.30.0", "backend": "vllm-ascend", "tensor_parallel": 8, "dataset": "random", "precision": "w8a8",
+      "workload": { "model": "Qwen3-8B", "cards": 8, "random_input_len": 4096, "random_output_len": 512, "max_concurrency": 32, "dataset": "random", "precision": "w8a8" } }
+  },
+  {
+    "date": "2026-11-06T09:20:00+08:00",
+    "label": "conc-64",
+    "model_id": "Qwen3-8B",
+    "completed": 512, "num_prompts": 512, "duration": 31.4,
+    "request_throughput": 16.3, "output_throughput": 1246.0, "total_token_throughput": 5150.0,
+    "median_ttft_ms": 260.0, "p99_ttft_ms": 760.0, "median_tpot_ms": 26.0, "p99_tpot_ms": 43.0,
+    "median_itl_ms": 26.0, "p99_itl_ms": 45.0, "request_rate": "inf", "max_concurrency": 64,
+    "metadata": { "cann": "8.1.RC2", "framework": "vllm", "framework_version": "0.30.0", "backend": "vllm-ascend", "tensor_parallel": 8, "dataset": "random", "precision": "w8a8",
+      "workload": { "model": "Qwen3-8B", "cards": 8, "random_input_len": 4096, "random_output_len": 512, "max_concurrency": 64, "dataset": "random", "precision": "w8a8" } }
+  },
+  {
+    "date": "2026-11-06T09:40:00+08:00",
+    "label": "conc-128",
+    "model_id": "Qwen3-8B",
+    "completed": 1024, "num_prompts": 1024, "duration": 63.2,
+    "request_throughput": 16.2, "output_throughput": 1249.0, "total_token_throughput": 5160.0,
+    "median_ttft_ms": 420.0, "p99_ttft_ms": 920.0, "median_tpot_ms": 30.0, "p99_tpot_ms": 47.0,
+    "median_itl_ms": 30.0, "p99_itl_ms": 50.0, "request_rate": "inf", "max_concurrency": 128,
+    "metadata": { "cann": "8.1.RC2", "framework": "vllm", "framework_version": "0.30.0", "backend": "vllm-ascend", "tensor_parallel": 8, "dataset": "random", "precision": "w8a8",
+      "workload": { "model": "Qwen3-8B", "cards": 8, "random_input_len": 4096, "random_output_len": 512, "max_concurrency": 128, "dataset": "random", "precision": "w8a8" } }
+  }
+]

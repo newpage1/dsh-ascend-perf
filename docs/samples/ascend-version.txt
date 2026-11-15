@@ -1,0 +1,36 @@
+=== ascend version ===
+--- /usr/local/Ascend/ascend-toolkit/latest/version.cfg
+# version: 1.0
+runtime_running_version=[7.7.0.3.220:8.1.RC2]
+compiler_running_version=[7.7.0.3.220:8.1.RC2]
+hccl_running_version=[7.7.0.3.220:8.1.RC2]
+opp_running_version=[7.7.0.3.220:8.1.RC2]
+toolkit_running_version=[7.7.0.3.220:8.1.RC2]
+aoe_running_version=[7.7.0.3.220:8.1.RC2]
+ncs_running_version=[7.7.0.3.220:8.1.RC2]
+opp_kernel_running_version=[7.7.0.3.220:8.1.RC2]
+runtime_upgrade_version=[7.7.0.3.220:8.1.RC2]
+compiler_upgrade_version=[7.7.0.3.220:8.1.RC2]
+hccl_upgrade_version=[7.7.0.3.220:8.1.RC2]
+opp_upgrade_version=[7.7.0.3.220:8.1.RC2]
+toolkit_upgrade_version=[7.7.0.3.220:8.1.RC2]
+aoe_upgrade_version=[7.7.0.3.220:8.1.RC2]
+ncs_upgrade_version=[7.7.0.3.220:8.1.RC2]
+opp_kernel_upgrade_version=[7.7.0.3.220:8.1.RC2]
+runtime_installed_version=[7.7.0.3.220:8.1.RC2]
+compiler_installed_version=[7.7.0.3.220:8.1.RC2]
+hccl_installed_version=[7.7.0.3.220:8.1.RC2]
+opp_installed_version=[7.7.0.3.220:8.1.RC2]
+toolkit_installed_version=[7.7.0.3.220:8.1.RC2]
+aoe_installed_version=[7.7.0.3.220:8.1.RC2]
+ncs_installed_version=[7.7.0.3.220:8.1.RC2]
+opp_kernel_installed_version=[7.7.0.3.220:8.1.RC2]
+=== python ===
+Python 3.9.9
+=== packages ===
+Name: torch
+Version: 2.8.0
+Location: /usr/local/lib64/python3.9/site-packages
+Name: torch_npu
+Version: 2.8.0.post4
+Location: /usr/local/lib64/python3.9/site-packages
