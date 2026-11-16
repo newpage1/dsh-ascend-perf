@@ -870,12 +870,12 @@ node test/run-tests.mjs → 70 passed, 0 failed
 | T132-10 | `profile：ProfileStore 私有存储（0700/0600/原子写/列表/详情/删除）` | `Missing expected exception: 应拒绝：manifest.session_id 非法`（旧实现无 _validateSession，非法 manifest 照常落库） |
 | T132-12 | `t133 T132-12：total_ns 非整数字符串不抛 TypeError，结构化降级` | `Cannot convert 12.5 to a BigInt`（旧 NS 直接 BigInt 抛 TypeError） |
 
-**T132-11（REST+DOM 级联）**：该 finding 的修复本身就是新增级联测试（产品代码无 delta——t131 已具备 demo/会话/详情/报告路由与渲染），故不存在可还原的旧行为；级联用例在旧字节上同样通过，无旧/新差异可证，如实记录。恢复新实现后全量 **112 passed / 0 failed**。
+**T132-11（REST+DOM 级联）**：该 finding 的修复本身就是新增级联测试（产品代码无 delta——t131 已具备 demo/会话/详情/报告路由与渲染），故不存在可还原的旧行为；级联用例在旧字节上同样通过，无旧/新差异可证，如实记录。恢复新实现后全量 **113 passed / 0 failed**。
 
 ### 23.7.3 验证证据（t135 后）
 
 - `node --check index.js` / `node --check client.js` / `node --check profile.js` 全 0。
-- `node test/run-tests.mjs`：**112 passed / 0 failed**（t133 后 111 + t135 新增 1：R04 evidence 四要素非空；既有用例零删除，无断言改写）。
+- `node test/run-tests.mjs`：**113 passed / 0 failed**（t133 后 111 + t135 新增 1：R04 evidence 四要素非空；既有用例零删除，无断言改写）。
 - 旧行为 shim 两轮共 **11/12 条 finding 有旧实现失败输出**（t133 轮 3 failed + t135 轮 8 failed，见 23.7.2 的 12/12 对照表）；T132-11 产品代码无 delta，如实记录为不可反证。
 
 ### 23.7.4 t135 修复（T134-01/02）

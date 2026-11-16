@@ -63,6 +63,7 @@ import {
   evaluateProfileRules,
   createProfileService,
   createProfileRoutes,
+  createProfileTools,
 } from '../profile.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -3149,6 +3150,23 @@ test('t126 execSsh 构造：buildDeploySshExec 的 resolved argv', async () => {
   ])
   await execSsh('h2', 'x', 1000)
   assert.equal(spawns.length, 2)
+})
+
+test('t138 profile tools 必须声明 output.render（Cordis 激活门）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prof-tools-'))
+  try {
+    const svc = createProfileService({ dataDir: dir })
+    const tools = createProfileTools(svc)
+    assert.equal(tools.length, 3)
+    for (const def of tools) {
+      assert.ok(def.output && typeof def.output.schema === 'object' && def.output.schema !== null, `${def.name}.output.schema 必须是对象`)
+      assert.equal(typeof def.output.render, 'function', `${def.name}.output.render 必须是函数`)
+      const rendered = def.output.render({}, { status: 'ok' })
+      assert.ok(Array.isArray(rendered) && rendered[0]?.type === 'text', `${def.name}.render 返回 text 数组`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('t126 render 返回值：容器服务块返回树上的 testid/文案（不是入参）', async () => {
