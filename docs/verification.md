@@ -795,3 +795,90 @@ node test/run-tests.mjs → 70 passed, 0 failed
 - `node --check` index.js/client.js/deploy.js/deploy-exec.js（+tune.js/tune-exec.js）全 0；
 - `node test/run-tests.mjs`：**90 passed / 0 failed**（85+t128 两项新增；含 t126 全部回归）；
 - 宿主 envs.json：`deploy = { "allowRealExecution": false, "privilegedHosts": ["b01"] }`（执行门保持关闭）。
+
+## 23. t131：msprof Profile P1——导入/展示/R01–R05（2026-11-16）
+
+### 23.1 范围与依据
+
+按 `docs/tuning-msprof-design.md`（t130，419 行，sha256 前 16 位 `4353bdebc46062b1`）实现 P1：`op_statistic.csv` / `kernel_details.csv` 解析、`profile-v1` 私有存储、R01–R05 证据规则、REST/工具、调优段 profile 子视图。P2（stream/memory/communication、host 关联）与 P3 不在本轮。不改 `deploy-exec.js` / `tune-exec.js` 执行语义；不自动跑 msprof、不连远端。
+
+### 23.2 解析契约（对设计 §3.2/§5 的落实）
+
+- **判型只看 header 指纹**：statistic 需 6 必需列（Device_id/OP Type/Core Type/Count/Total Time(us)/Ratio(%)），kernel 需 9 必需列（Device_id/Task ID/Stream ID/Name/Type/OP State/Accelerator Core/Start Time(us)/Duration(us)）；空文件 `empty_file`、未知 `unrecognized_header`，native `op_summary` 表头不命中任何 dialect（不冒充）。
+- **us→ns 十进制定点**：`usToNsDecimal` 用 BigInt 定点（≤3 位小数精确；>3 位四舍五入 + `precisionLoss` 标记）；`NaN`/非十进制 → 拒绝。
+- **真实样本验收值**（`fixtures/profile/`，源自 910B3 微 probe E1/E3，内容纯数值已核对无主机/路径/秘密）：Count 总和 **21**、三类 Total 和 **13170463 ns**（= 13170.463 us）、实例 **21** 条、100% 记录带 `row:N` 来源。
+- **降级**：`Count=0` → `calls=0` + `mean/min/max` 空值 + `missing_reasons`；行级非法（NaN/负时长）→ `rejected` + session `partial`；缺必需列 → `PROFILE_PARSE_ERROR`（结构化，不猜）。CRLF/BOM/引号内嵌逗号换行（`""` 转义）均正确解析并保留记录起始行号。
+- **counter 语义**：`aic_mac_ratio` 等 6 个 fraction counter → `verified`（值域 0..1 之外记 warning）；`aicore_time(us)`/`aiv_time(us)` → ns metric；`Ratio(%)`/`cube_utilization(%)` → `source_reported`（/100），不作硬件利用率。kernel 表缺 counter 列时返回 `counters_absent`（R02 skipped 的依据）。
+- 聚合视图与实例视图分表存储（`record_kind` 区分），绝不相加。
+
+### 23.3 存储与入口
+
+- `<dataDir>/profile-v1/{real|demo}/<session_id>/manifest.json + ops.ndjson`；目录 0700、文件 0600、tmp+rename 原子写；`index.json` 会话列表；删除同步清理。与 `runs`/`hotspots`/`store.json` 完全独立，旧 90 项测试零回归（含旧 `op_summary` 热点导入路径）。
+- REST（fail-closed 鉴权沿用，401 透传已测）：`POST /profile/imports`、`POST /profile/demo`、`GET /profile/sessions`、`GET/DELETE /profile/sessions/:id`（pattern `prof-[a-z0-9]{16}`）、`GET /profile/sessions/:id/report`。
+- 工具：`ascend_profile_import` / `ascend_profile_list` / `ascend_profile_report`（结构化信封，`ProfileError` 不抛）。工具总数 16→19。
+- 限额：≤8 文件、单文件 ≤4 MiB、总量 ≤8 MiB → `PROFILE_TOO_LARGE`（REST 层超大请求体由 HTTP 层 `INPUT_TOO_LARGE` 先拒，同为结构化拒绝）。
+
+### 23.4 R01–R05 落实（设计 §6.2）
+
+真实样本判定（与手算一致）：R01 `triggered`（LaserAttention 88.894% ≥30%，证据 `op_statistic.csv row:2`）；R02 `not_triggered`（duration 加权 `aic_mac_ratio`≈0.790 ≥0.5）；R03 `triggered`（Transpose+Cast 11.1% ≥10% 且 18 次 ≥10）；R04 `not_triggered`（两视图 Count/Total 容差内一致；doctored 丢实例样本 → `triggered`，测试锁定）；R05 `skipped`（21 <100 实例，不伪造中位数；合成 150×10us 样本 → `triggered`）。缺 `aic_mac_ratio` 列 → R02 `skipped`，结论明写「不能从算子名称或 AI Core 时间份额推断 MAC 利用率」。规则输出含 `evidence[]`（文件/行/字段/值）、`conclusion`、`actions`、`confidence`、`status`、`missing_fields`；全部文案经测试断言不含「必然提速」。
+
+### 23.5 UI（调优段第四小节）
+
+`ProfileSection`：导入（多选 file input，FileReader 读文本 → REST）、加载演示 profile、session 下拉 + 删除、会话摘要（session_id/state/parser/coverage/文件与 dialect/演示徽标）、Top 算子表（类型/核/次数/总时长 ns/份额/来源行）、R01–R05 建议卡（状态色 + 证据展开按钮 `aria-expanded` + 展开证据块 + 建议动作 + 缺失字段）。窄栏 390px 单列可读（沿用既有 token/样式）。locale zh/en 与 client 内嵌字典同步（399 平铺键 parity 断言）。
+
+### 23.6 验证证据
+
+- `node --check index.js` / `node --check client.js` / `node --check profile.js` 全过。
+- `node test/run-tests.mjs`：**102 passed / 0 failed**（既有 90 + 新增 12；工具注册数断言 16→19 同步更新）。新增用例：CSV 基础（引号/内嵌换行/BOM/CRLF/行号）、us→ns（精确/舍入/精度标记/非法）、判型（真实表头/未知/空/native 不冒充）、op_statistic 真实样本（21/13170463/份额/行号/来源）、降级（Count=0/NaN/缺列/partial/CRLF）、kernel 真实样本（21 实例/row:8/0.79/counters_absent/负时长）、存储（0700/0600/列表/详情/删除/清理）、R01–R05 真实判定 + 缺 counter skipped + 禁语断言、R04 doctored/R05 合成触发、service（限额/未知格式/混合导入/demo/CRUD）、REST 全链 + 401 + 超大、UI（导入入口/空态 loading/摘要/Top 表/规则卡/证据展开/未展开不渲染/aria-expanded/locale parity）。
+- 独立冒烟（本仓根 `node -e` 真实 fixture 全链）：导入→detail→report→list→delete 全通过；`index.json` 0600、`profile-v1` 0700 实测。
+
+## 23.7 t133：t132 findings 修复（R05 真实分母 / R04 容差 / strict 默认 / 判型白名单 / 负值 NaN / 越界 / schema 校验 / NS 安全 / 串联）
+
+### 23.7.1 修复对照（12 条 → 用例）
+
+| Finding | 修复 | 对应用例 |
+| --- | --- | --- |
+| T132-01（blocker）R05 分母自比（share 恒 1.0） | 分母=**全部实例总时长**；分子/分母/share/candidate 写 metrics；按 op_type 分组（≥100 实例才候选） | `t133 T132-01`（150 TinyOp 10us + 3 HugeOp 500000us → not_triggered，share≈0.001，结论「份额不足」）；既有 R05 合成用例补分母断言（denominator=numerator='1500000'，单类样本 share=1 仍触发，证明分母真实存在而非恒等式） |
+| T132-02 负 ns 时长 | Total/Min/Avg/Max 负值 → 行级 `rejected`（negative_duration，带字段+行号） | `t133 T132-02/03`（负 Total、负 Min 各 rejected；空值仍缺省不误伤） |
+| T132-03 NaN 当空值 | `RAW_EMPTY` 移除 NaN；Min=NaN / kernel Start=NaN → 整行 `rejected`（not_a_decimal_us，字段+行号） | 同上用例（NaN 三断言 + Start 空值缺省回归） |
+| T132-04 未知额外列进统计 | 判型白名单（statistic 9 列/kernel 45 列，可选列可缺席）；未知列 → `unknown_columns` 不进定量统计 | `t133 T132-04`（WeirdCol → unsupported + unknown 清单；白名单子集仍判型） |
+| T132-05 R04 无容差 | Count 按 `max(1%, 0)`、Total 按 `max(1%, 1000ns)`，严格超出才触发 | `t133 T132-05`（100v99 not_triggered / 100v100 not_triggered / 100v98 triggered） |
+| T132-06 R04 不查 ratio 越界 | 扫描聚合 `source_ratio` 与实例 ratio counter 的 [0,1] 越界 → mismatch（字段/值/行号） | `t133 T132-06`（1.5 / -0.5 → ratio_out_of_range） |
+| T132-07 evidence 缺四要素 | R04 mismatch 带 row/kernel_row；R05 为 median/份额/实例集合各写 evidence；每条含 source_id/locator/transform/values | `t133 T132-01`（evidence 循环断言四要素）+ R05 合成用例同款断言 |
+| T132-08 rejected 仍落库 | 默认 **strict**：有 rejected → `PROFILE_REJECTED_RECORDS` 整 session 不落库；显式 `partial` 才跳坏行；REST/工具透传 policy | `t133 T132-08`（一好一坏默认拒 + 列表 0；partial → state=partial/coverage；`lax` → PROFILE_INVALID_POLICY） |
+| T132-09 越界 counter 进 metrics | 越界/非有限 ratio → warning + 不进 metrics；R02 因缺 counter skipped | `t133 T132-09`（1.5/-0.5 → metrics 无 aic_mac_ratio + R02 skipped missing aic_mac_ratio） |
+| T132-10 落库不校验 | `commitSession` 前校验 session/op 必填、类型、sha256 64hex、op_id 16hex、sources 外键；非法 → `PROFILE_SCHEMA_INVALID` 不写字节 | Store 用例扩展（6 个非法子用例：bad session_id/sha/state/session 不一致/op_id/外键悬空） |
+| T132-11 UI 只 mock | **server route + DOM 级联**：真实 apply() 路由 demo→sessions→detail→report→ProfileSessionView/ProfileRuleCard 用**真实载荷**渲染（row:2 行号文本、aria-expanded、evidence testid）→DELETE | `t133 T132-11` |
+| T132-12 NS TypeError | `NS()` 删除 → `nsFromString()`（null 不抛）；R01–R05 结构化降级（`invalid_total_ns_records:N`） | `t133 T132-12`（'12.5' 全非法 → skipped；混合 → 仍计算 + 降级注记；R05 不抛） |
+
+### 23.7.2 旧实现失败证明（要求 #2；t135 补全 12/12 对照）
+
+`profile.js` 在 git 中尚未提交（t131 交付未含 commit），无 stash 基线；采用**旧行为 shim**（临时把修复点逐条改回 t133/t135 前的行为）运行测试后恢复。两轮 shim 覆盖全部 12 条 finding：
+
+**第一轮（t133，3 处核心行为还原：R05 share=total/total 自比、R04 任意 count 差即触发、无 strict 策略）**：108 passed / 3 failed——失败为 `t133 T132-01`（R05 真实分母）、`t133 T132-05`（R04 容差）、`t133 T132-08`（strict 默认）。
+
+**第二轮（t135，其余 9 条旧行为 shim）**——还原点：负值静默接受（S02）、'NaN' 计入 RAW_EMPTY 静默缺省（S03）、判型无白名单（S04）、R04 无 ratio 越界扫描（S06）、R04/R05 evidence 退回旧形状 {file,fields,values}（S07，含 R05 values 去掉 first_row/last_row）、越界 counter 照旧进 metrics（S09）、commitSession 跳过 _validateSession（S10）、nsFromString 直接 BigInt('12.5') 抛 TypeError（S12）。运行结果 **104 passed / 8 failed**，逐条失败输出（`node test/run-tests.mjs`，test 名 → 断言消息节选）：
+
+| finding | 失败用例 | 旧实现失败输出（节选） |
+|---|---|---|
+| T132-02/03 | `t133 T132-02/03：负 Total / 负 Min / Min=NaN / kernel Start=NaN → 行级 rejected（不再静默）` | `Expected values to be strictly equal`（rejected 计数为 0，负值/NaN 被静默接受或缺省） |
+| T132-04 | `t133 T132-04：未知额外列 → unsupported（unknown_columns），不进定量统计` | `Expected values to be strictly equal: 'unknown' ≠ 'statistic'`（无白名单，WeirdCol 文件照常判型） |
+| T132-06 | `t133 T132-06：R04 扫描 ratio 越界 … 写 mismatch+行号` | `Expected values to be strictly equal`（mismatch_detail 无 ratio_out_of_range 条目） |
+| T132-07 | `profile：R04 交叉核验（doctored 实例触发）/ R05 合成样本触发` | `evidence 缺 source_id`（R05 evidence 旧形状无四要素） |
+| T132-07/T134-02 | `t135 T134-02：R04 每条 evidence 四要素非空（含 overview 代表行 locator）` | `source_id 非空：{"file":"op_statistic.csv","fields":[…],"values":{…}}`（R04 evidence 旧形状无 source_id/locator/transform） |
+| T132-09 | `t133 T132-09：越界/非有限 ratio counter 不进 metrics，R02 走 skipped` | `越界 ratio 不得进入 metrics`（旧实现照旧 push aic_mac_ratio） |
+| T132-10 | `profile：ProfileStore 私有存储（0700/0600/原子写/列表/详情/删除）` | `Missing expected exception: 应拒绝：manifest.session_id 非法`（旧实现无 _validateSession，非法 manifest 照常落库） |
+| T132-12 | `t133 T132-12：total_ns 非整数字符串不抛 TypeError，结构化降级` | `Cannot convert 12.5 to a BigInt`（旧 NS 直接 BigInt 抛 TypeError） |
+
+**T132-11（REST+DOM 级联）**：该 finding 的修复本身就是新增级联测试（产品代码无 delta——t131 已具备 demo/会话/详情/报告路由与渲染），故不存在可还原的旧行为；级联用例在旧字节上同样通过，无旧/新差异可证，如实记录。恢复新实现后全量 **112 passed / 0 failed**。
+
+### 23.7.3 验证证据（t135 后）
+
+- `node --check index.js` / `node --check client.js` / `node --check profile.js` 全 0。
+- `node test/run-tests.mjs`：**112 passed / 0 failed**（t133 后 111 + t135 新增 1：R04 evidence 四要素非空；既有用例零删除，无断言改写）。
+- 旧行为 shim 两轮共 **11/12 条 finding 有旧实现失败输出**（t133 轮 3 failed + t135 轮 8 failed，见 23.7.2 的 12/12 对照表）；T132-11 产品代码无 delta，如实记录为不可反证。
+
+### 23.7.4 t135 修复（T134-01/02）
+
+- **T134-02**：`ruleR04` 的两条 overview evidence 此前 `row:''/locator:''`——现填代表行（首个聚合/首个实例的 `row:N` locator，`profile.js` ruleR04 内 `firstAggRow/firstInstRow`）；新增用例 `t135 T134-02：R04 每条 evidence 四要素非空` 对 triggered R04 的**每条** evidence 断言 source_id/locator/transform/values 非空（含 overview 两条 locator=='row:2'）。
+- **T134-01**：补全 9 条 finding 的旧行为 shim 与逐条失败输出（见 23.7.2 第二轮表）。

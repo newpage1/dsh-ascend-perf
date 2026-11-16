@@ -50,6 +50,20 @@ import {
   summarizeSshStderr,
 } from '../index.js'
 import { DeployPlanService, createDeployTools, readPlansConfig, writePlansConfig, validatePlanSpec, buildPlanSteps, PLAN_STORE_FILE, DEPLOY_PLAN_SCHEMA, DEPLOY_COMPONENTS, DEFAULT_DEPLOY_COMPONENT } from '../deploy.js'
+import {
+  ProfileError,
+  PROFILE_DIALECTS,
+  PROFILE_SCHEMA,
+  detectProfileDialect,
+  parseCsvRecords,
+  usToNsDecimal,
+  parseOpStatistic,
+  parseKernelDetails,
+  ProfileStore,
+  evaluateProfileRules,
+  createProfileService,
+  createProfileRoutes,
+} from '../profile.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fixture = (name) => join(here, '..', 'fixtures', name)
@@ -383,7 +397,7 @@ test('formatCompareMarkdown：含结论、阈值与指标表', () => {
 
 /* ------------------------------ Host 集成 ------------------------------ */
 
-test('apply：注册 16 个工具（4 看板 + 4 调优 + 4 部署计划 + 4 容器服务）与 /api/ascend-perf 前缀路由；无 NPU 时降级不抛错', async () => {
+test('apply：注册 19 个工具（4 看板 + 4 调优 + 4 部署计划 + 4 容器服务 + 3 profile）与 /api/ascend-perf 前缀路由；无 NPU 时降级不抛错', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ascend-perf-test-'))
   const tools = new Map()
   const routes = []
@@ -404,7 +418,7 @@ test('apply：注册 16 个工具（4 看板 + 4 调优 + 4 部署计划 + 4 容
   }
   apply(ctx, { dataDir: dir, configDir: join(dir, 'conf') })
   try {
-    assert.deepEqual([...tools.keys()].sort(), ['ascend_deploy_plan_generate', 'ascend_deploy_plan_get', 'ascend_deploy_plan_list', 'ascend_deploy_plan_update', 'ascend_deploy_run_preview', 'ascend_deploy_run_start', 'ascend_deploy_run_status', 'ascend_deploy_run_stop', 'ascend_perf_compare', 'ascend_perf_import', 'ascend_perf_insight', 'ascend_status', 'ascend_tune_plan', 'ascend_tune_report', 'ascend_tune_run', 'ascend_tune_status'])
+    assert.deepEqual([...tools.keys()].sort(), ['ascend_deploy_plan_generate', 'ascend_deploy_plan_get', 'ascend_deploy_plan_list', 'ascend_deploy_plan_update', 'ascend_deploy_run_preview', 'ascend_deploy_run_start', 'ascend_deploy_run_status', 'ascend_deploy_run_stop', 'ascend_perf_compare', 'ascend_perf_import', 'ascend_perf_insight', 'ascend_profile_import', 'ascend_profile_list', 'ascend_profile_report', 'ascend_status', 'ascend_tune_plan', 'ascend_tune_report', 'ascend_tune_run', 'ascend_tune_status'])
     assert.equal(routes.length, 1)
     assert.equal(routes[0].path, '/api/ascend-perf')
     assert.equal(routes[0].kind, 'prefix')
@@ -552,6 +566,7 @@ function makeReq(url, { method = 'GET', body = null } = {}) {
   req.url = url
   req.method = method
   req.headers = {}
+  req.destroy = () => {}
   queueMicrotask(() => {
     if (body !== null) req.emit('data', Buffer.from(JSON.stringify(body)))
     req.emit('end')
@@ -1414,6 +1429,15 @@ function textOf(node) {
   let out = ''
   walkTree(node, (n) => { if (typeof n === 'string') out += n + ' ' })
   return out
+}
+
+function findTestId(node, testid) {
+  let found = null
+  walkTree(node, (n) => {
+    if (found) return
+    if (n && typeof n === 'object' && n.props?.['data-testid'] === testid) found = n
+  })
+  return found
 }
 
 test('client.js：占用视图渲染——无编辑入口、pill/strip/testid、排序与状态角标、ConfigBar 路径', () => {
@@ -3217,6 +3241,616 @@ test('t132 高级参数：vLLM 启动参数与五组件代码分支进入运行�
   assert.ok(argv.includes('--enforce-eager'))
   assert.throws(() => validateRunSpec({ ...raw, code: { components: [{ component: 'bad', ref: 'main' }] } }, t124GetEnv()), /未知代码组件/)
   assert.throws(() => validateRunSpec({ ...raw, code: { components: [{ component: 'vllm', ref: 'bad ref!' }] } }, t124GetEnv()), /分支/)
+})
+
+
+/* ================== t131：msprof profile P1（解析/存储/R01–R05/REST/UI） ================== */
+
+test('profile：CSV 基础解析（引号/内嵌换行/BOM/CRLF/行号保留）', () => {
+  // 引号内嵌逗号 + "" 转义 + CRLF + BOM
+  const text = '\uFEFFName,Shape\r\n"A,1","x""y"\r\nB,"line1\nline2"\r\n'
+  const { records, rows } = parseCsvRecords(text)
+  assert.equal(records.length, 3)
+  assert.deepEqual(records[0], ['Name', 'Shape'])
+  assert.deepEqual(records[1], ['A,1', 'x"y'])
+  assert.deepEqual(records[2], ['B', 'line1\nline2'])
+  assert.equal(rows[1], 2)
+  assert.equal(rows[2], 3)
+})
+
+test('profile：us→ns 定点换算（精确/舍入/精度标记/非法）', () => {
+  assert.equal(usToNsDecimal('11707.694').ns, '11707694')
+  assert.equal(usToNsDecimal('11707.694').precisionLoss, false)
+  assert.equal(usToNsDecimal('3913.5785').ns, '3913579') // 四舍五入
+  assert.equal(usToNsDecimal('3913.5785').precisionLoss, true)
+  assert.equal(usToNsDecimal('3913.5784').ns, '3913578')
+  assert.equal(usToNsDecimal('0.001').ns, '1')
+  assert.equal(usToNsDecimal('NaN').ok, false)
+  assert.equal(usToNsDecimal('12abc').ok, false)
+  assert.equal(usToNsDecimal('').ok, false)
+})
+
+test('profile：header 指纹判型（真实表头/未知/空文件）', () => {
+  const stat = read('profile/op_statistic.csv')
+  const kern = read('profile/kernel_details.csv')
+  assert.equal(detectProfileDialect(stat).dialect, 'statistic')
+  assert.equal(detectProfileDialect(kern).dialect, 'kernel')
+  const unknown = detectProfileDialect('foo,bar\n1,2\n')
+  assert.equal(unknown.dialect, 'unknown')
+  assert.equal(unknown.reason, 'unrecognized_header')
+  const empty = detectProfileDialect('')
+  assert.equal(empty.dialect, 'unknown')
+  assert.equal(empty.reason, 'empty_file')
+  // 未知表头不是 kernel（native op_summary 不冒充）
+  const nativeSummary = 'Op Name,Task Type,Frequency,Percent\nAdd,0,10,0.5\n'
+  assert.equal(detectProfileDialect(nativeSummary).dialect, 'unknown')
+})
+
+test('profile：op_statistic 真实样本解析（Count/Total/份额/行号/来源）', () => {
+  const stat = read('profile/op_statistic.csv')
+  const s = parseOpStatistic(stat, { file: { source_id: 'src-e1', path_redacted: 'op_statistic.csv' }, sessionId: 'prof-fixed0000000001' })
+  assert.equal(s.kind, 'aggregate')
+  assert.equal(s.ops.length, 3)
+  assert.equal(s.ops.reduce((a, o) => a + o.calls, 0), 21) // 设计 §9：Count 总和 21
+  const totalNs = s.ops.reduce((a, o) => a + BigInt(o.total_ns), 0n)
+  assert.equal(totalNs.toString(), '13170463') // 13170.463 us（设计 §9）
+  const first = s.ops[0]
+  assert.equal(first.op_type, 'LaserAttention')
+  assert.equal(first.core_type, 'MIX_AIC')
+  assert.equal(first.calls, 3)
+  assert.equal(first.total_ns, '11707694')
+  assert.equal(first.mean_ns, '3902565') // 11707.694/3 → us 定点均值 3902.565
+  assert.equal(first.sources[0].locator, 'row:2') // 来源行号
+  const ratio = first.metrics.find((m) => m.key === 'source_ratio')
+  assert.ok(Math.abs(ratio.value - 0.88894) < 1e-9)
+  assert.equal(ratio.semantic_status, 'source_reported')
+})
+
+test('profile：op_statistic 降级（Count=0 / NaN / 缺列 / 部分拒绝）', () => {
+  const header = 'Device_id,OP Type,Core Type,Count,Total Time(us),Ratio(%)\n'
+  // Count=0：calls=0 但 mean/min/max 缺省并给 missing_reasons
+  const zeroCount = parseOpStatistic(header + '0,Transpose,AI_VECTOR_CORE,0,0.000,0.000\n', { file: { source_id: 's1', path_redacted: 'x' }, sessionId: 'prof-t0' })
+  assert.equal(zeroCount.ops[0].calls, 0)
+  assert.equal(zeroCount.ops[0].mean_ns, null)
+  assert.equal(zeroCount.ops[0].missing_reasons.mean_ns, 'count_is_zero_source_mean_undefined')
+  // NaN/非法数 → 行级 rejected
+  const nan = parseOpStatistic(header + '0,Transpose,AI_VECTOR_CORE,3,NaN,1.0\n', { file: { source_id: 's1', path_redacted: 'x' }, sessionId: 'prof-t1' })
+  assert.equal(nan.ops.length, 0)
+  assert.equal(nan.rejected.length, 1)
+  assert.equal(nan.rejected[0].reason, 'not_a_decimal_us')
+  // 部分拒绝 → session partial（由 service 层体现），行级保留
+  const partial = parseOpStatistic(header + '0,A,AI_VECTOR_CORE,1,1.500,0.1\n0,B,AI_VECTOR_CORE,abc,2.500,0.2\n', { file: { source_id: 's1', path_redacted: 'x' }, sessionId: 'prof-t2' })
+  assert.equal(partial.ops.length, 1)
+  assert.equal(partial.rejected.length, 1)
+  // 缺必需列 → 结构化错误
+  assert.throws(() => parseOpStatistic('Device_id,OP Type\n0,A\n', { file: { source_id: 's', path_redacted: 'x' }, sessionId: 'prof-t3' }), (e) => e instanceof ProfileError && e.code === 'PROFILE_PARSE_ERROR')
+  // CRLF + BOM 不影响
+  const crlf = parseOpStatistic('\uFEFF' + header.replace(/\n/g, '\r\n') + '0,A,AI_VECTOR_CORE,2,3.000,0.3\r\n', { file: { source_id: 's1', path_redacted: 'x' }, sessionId: 'prof-t4' })
+  assert.equal(crlf.ops.length, 1)
+  assert.equal(crlf.ops[0].total_ns, '3000')
+})
+
+test('profile：kernel_details 真实样本解析（实例/us→ns/counter 语义）', () => {
+  const kern = read('profile/kernel_details.csv')
+  const k = parseKernelDetails(kern, { file: { source_id: 'src-e3', path_redacted: 'kernel_details.csv' }, sessionId: 'prof-fixed0000000002' })
+  assert.equal(k.kind, 'instance')
+  assert.equal(k.ops.length, 21) // 设计 §9：21 实例
+  assert.equal(k.counters_absent.length, 0)
+  const la = k.ops.find((o) => o.op_name === 'LaserAttention')
+  assert.ok(la)
+  assert.equal(la.sources[0].locator, 'row:8')
+  assert.equal(la.total_ns, '3913578') // 3913.578 us → ns
+  const mac = la.metrics.find((m) => m.key === 'aic_mac_ratio')
+  assert.ok(Math.abs(mac.value - 0.79) < 1e-12)
+  assert.equal(mac.semantic_status, 'verified')
+  assert.equal(mac.unit, 'ratio')
+  // 每条记录 100% 带来源
+  assert.ok(k.ops.every((o) => o.sources.length > 0 && o.sources[0].locator.startsWith('row:')))
+  // N/A 字段不炸（Model ID/Context ID）
+  assert.ok(k.ops.every((o) => o.op_name != null))
+  // 缺 counter 列 → counters_absent（R02 skipped 依据）
+  const headerNoCounters = 'Device_id,Task ID,Stream ID,Name,Type,OP State,Accelerator Core,Start Time(us),Duration(us)\n0,10,47,K,Transpose,Done,AI_VECTOR_CORE,1.000,2.000\n'
+  const k2 = parseKernelDetails(headerNoCounters, { file: { source_id: 's', path_redacted: 'x' }, sessionId: 'prof-t5' })
+  assert.ok(k2.counters_absent.includes('aic_mac_ratio'))
+  // 负 duration → rejected
+  const neg = parseKernelDetails(headerNoCounters + '0,11,47,K2,Bad,Done,AI_VECTOR_CORE,1.000,-5.000\n', { file: { source_id: 's', path_redacted: 'x' }, sessionId: 'prof-t6' })
+  assert.equal(neg.rejected.length, 1)
+  assert.equal(neg.rejected[0].reason, 'negative_duration')
+})
+
+test('profile：ProfileStore 私有存储（0700/0600/原子写/列表/详情/删除）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 't131-store-'))
+  const store = new ProfileStore(dir)
+  const manifest = {
+    schema: 'profile-session-v1', session_id: 'prof-abc123def4567890', revision: 1, state: 'ready',
+    evidence_kind: 'unverified_import', is_demo: false, created_at: new Date().toISOString(),
+    source: { mode: 'upload', env_id: null, parser_version: 'x' }, model: { name: null, revision: null, origin: 'unknown' },
+    parallel: { tp: null, pp: null, dp: null, cp: null, ep: null, device_count: null },
+    versions: { cann: null, driver: null, torch_npu: null, msprof: null },
+    capture: { started_at: null, ended_at: null, command_redacted: null, parameters: {}, stability: 'unknown' },
+    clocks: [], files: [{ source_id: 's1', path_redacted: 'op_statistic.csv', sha256: '0'.repeat(64), bytes: 1, dialect: PROFILE_DIALECTS.statistic.id, validation: 'native_sample_verified' }],
+    coverage: { accepted: 1, rejected: 0, unhandled: 0, join_exact: 0, join_ambiguous: 0, join_missing: 0, complete_device_timeline: false },
+    linked_run_ids: [], missing_reasons: {},
+  }
+  const ops = [{ session_id: 'prof-abc123def4567890', op_id: 'abcdef0123456789', record_kind: 'aggregate', op_type: 'A', core_type: 'AI_VECTOR_CORE', calls: 1, total_ns: '1000', metrics: [], sources: [{ source_id: 's1', locator: 'row:2', fields: ['OP Type'] }], missing_reasons: {} }]
+  store.commitSession({ manifest, ops })
+  assert.equal(statSync(join(dir, 'profile-v1')).mode & 0o777, 0o700)
+  assert.equal(statSync(join(dir, 'profile-v1', 'real', 'prof-abc123def4567890', 'manifest.json')).mode & 0o777, 0o600)
+  assert.equal(store.listSessions().length, 1)
+  assert.equal(store.getManifest('prof-abc123def4567890').manifest.session_id, 'prof-abc123def4567890')
+  assert.equal(store.queryOps('prof-abc123def4567890')[0].op_type, 'A')
+  assert.throws(() => store.getManifest('prof-doesnotexist00'), (e) => e.code === 'PROFILE_SESSION_NOT_FOUND')
+  store.deleteSession('prof-abc123def4567890')
+  assert.equal(store.listSessions().length, 0)
+  assert.ok(!existsSync(join(dir, 'profile-v1', 'real', 'prof-abc123def4567890')))
+  // t133 T132-10：非法 manifest/op → PROFILE_SCHEMA_INVALID，不落库
+  const badCases = [
+    ['manifest.session_id 非法', { ...manifest, session_id: 'not-a-session-id' }, ops],
+    ['manifest.files[].sha256 非法', { ...manifest, files: [{ ...manifest.files[0], sha256: '00' }] }, ops],
+    ['manifest.state 非法', { ...manifest, state: 'weird' }, ops],
+    ['ops[].session_id 不一致', manifest, [{ ...ops[0], session_id: 'prof-ffffffffffffffff' }]],
+    ['ops[].op_id 非法', manifest, [{ ...ops[0], op_id: 'op1' }]],
+    ['ops[].sources[].source_id 外键悬空', manifest, [{ ...ops[0], sources: [{ source_id: 's-not-exist', locator: 'row:2', fields: [] }] }]],
+  ]
+  for (const [label, m, o] of badCases) {
+    assert.throws(() => store.commitSession({ manifest: m, ops: o }), (e) => e instanceof ProfileError && e.code === 'PROFILE_SCHEMA_INVALID', `应拒绝：${label}`)
+  }
+  assert.equal(store.listSessions().length, 0)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+function buildRealSession(dir) {
+  const service = createProfileService({ dataDir: dir })
+  const stat = read('profile/op_statistic.csv')
+  const kern = read('profile/kernel_details.csv')
+  const imp = service.importFiles({ files: [{ name: 'op_statistic.csv', content: stat }, { name: 'kernel_details.csv', content: kern }] })
+  return { service, imp }
+}
+
+test('profile：R01–R05 真实样本判定（trigger/not/skip 与证据）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 't131-rules-'))
+  const { service, imp } = buildRealSession(dir)
+  const rep = service.report(imp.session_id)
+  const byId = Object.fromEntries(rep.rules.map((r) => [r.rule_id, r]))
+  // R01 LaserAttention 88.894% ≥ 30% → triggered，证据含来源行
+  assert.equal(byId.R01.status, 'triggered')
+  assert.ok(byId.R01.evidence[0].row.startsWith('row:'))
+  assert.equal(byId.R01.evidence[0].file, 'op_statistic.csv')
+  // R02 加权 mac≈0.79 ≥ 0.5 → not_triggered（有 counter）
+  assert.equal(byId.R02.status, 'not_triggered')
+  assert.ok(byId.R02.metrics.find((m) => m.key === 'weighted_aic_mac_ratio'))
+  // R03 (1357.767+105.002)/13170.463 = 11.1% ≥ 10% 且 18 次 ≥ 10 → triggered
+  assert.equal(byId.R03.status, 'triggered')
+  // R04 双视图一致 → not_triggered
+  assert.equal(byId.R04.status, 'not_triggered')
+  // R05 21 < 100 → skipped（样本不足）
+  assert.equal(byId.R05.status, 'skipped')
+  assert.ok(byId.R05.missing_fields.includes('op_type_with_100_instances'))
+  // 缺 counter → R02 skipped 且不推断
+  const svc2 = createProfileService({ dataDir: dir })
+  const header = 'Device_id,Task ID,Stream ID,Name,Type,OP State,Accelerator Core,Start Time(us),Duration(us)\n'
+  const kernNoCounter = header + Array.from({ length: 3 }, (_, i) => `0,${10 + i},47,LaserAttn${i},LaserAttention,Done,MIX_AIC,${i}.000,120.000`).join('\n') + '\n'
+  const imp2 = svc2.importFiles({ files: [{ name: 'kernel_details.csv', content: kernNoCounter }] })
+  const rep2 = svc2.report(imp2.session_id)
+  const r2 = rep2.rules.find((r) => r.rule_id === 'R02')
+  assert.equal(r2.status, 'skipped')
+  assert.ok(r2.missing_fields.includes('aic_mac_ratio'))
+  assert.ok(r2.conclusion.includes('不能从算子名称'))
+  // 禁用语：不出现“必然提速”/不把份额当利用率
+  const allText = JSON.stringify(rep) + JSON.stringify(rep2)
+  assert.ok(!allText.includes('必然提速'))
+  assert.ok(!allText.includes('hardware utilization'))
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('profile：R04 交叉核验（doctored 实例触发）/ R05 合成样本触发', () => {
+  const dir = mkdtempSync(join(tmpdir(), 't131-r4r5-'))
+  const service = createProfileService({ dataDir: dir })
+  const stat = read('profile/op_statistic.csv')
+  // 篡改实例数：丢掉一半 LaserAttention 实例 → Count 差异 → R04 triggered
+  const kern = read('profile/kernel_details.csv').split('\n')
+  const kernDropped = [kern[0], ...kern.slice(1).filter((l) => !l.includes('LaserAttention') || !l.includes('3913.578'))].join('\n')
+  const imp = service.importFiles({ files: [{ name: 'op_statistic.csv', content: stat }, { name: 'kernel_details.csv', content: kernDropped }] })
+  const rep = service.report(imp.session_id)
+  const r4 = rep.rules.find((r) => r.rule_id === 'R04')
+  assert.equal(r4.status, 'triggered')
+  assert.ok(r4.conclusion.includes('差异'))
+  // R05：合成 150 个 10us 实例（median<20us）→ triggered
+  const header = 'Device_id,Task ID,Stream ID,Name,Type,OP State,Accelerator Core,Start Time(us),Duration(us)\n'
+  const rows = Array.from({ length: 150 }, (_, i) => `0,${100 + i},47,Tiny${i},TinyOp,Done,AI_VECTOR_CORE,${i}.000,10.000`).join('\n')
+  const svc2 = createProfileService({ dataDir: dir })
+  const imp2 = svc2.importFiles({ files: [{ name: 'kernel_details.csv', content: header + rows + '\n' }] })
+  const rep2 = svc2.report(imp2.session_id)
+  const r5 = rep2.rules.find((r) => r.rule_id === 'R05')
+  assert.equal(r5.status, 'triggered')
+  assert.ok(r5.conclusion.includes('中位数'))
+  // t133 T132-01：真实分母（全部实例总时长）写入 metrics；单类样本下 share=1 依旧触发
+  const m = Object.fromEntries(r5.metrics.map((x) => [x.key, x.value]))
+  assert.equal(m.r05_denominator_ns, '1500000')
+  assert.equal(m.r05_numerator_ns, '1500000')
+  assert.equal(m.small_task_share, 1)
+  assert.equal(m.candidate_instance_count, 150)
+  for (const ev of r5.evidence) {
+    assert.ok(typeof ev.source_id === 'string' && ev.source_id.length > 0, 'evidence 缺 source_id')
+    assert.ok(String(ev.locator).startsWith('row:'), 'evidence 缺 locator')
+    assert.ok(typeof ev.transform === 'string' && ev.transform.length > 0, 'evidence 缺转换说明')
+    assert.ok(ev.values && Object.keys(ev.values).length > 0, 'evidence 缺值')
+  }
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('profile：service（限额/未知格式/重复导入/demo/session CRUD）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 't131-svc-'))
+  const service = createProfileService({ dataDir: dir })
+  const stat = read('profile/op_statistic.csv')
+  const kern = read('profile/kernel_details.csv')
+  // 超大：>4MiB 单文件
+  const big = 'x'.repeat(4 * 1024 * 1024 + 10)
+  assert.throws(() => service.importFiles({ files: [{ name: 'big.csv', content: big }] }), (e) => e.code === 'PROFILE_TOO_LARGE')
+  // 未知 header → 不猜
+  assert.throws(() => service.importFiles({ files: [{ name: 'a.csv', content: 'p,q\n1,2\n' }] }), (e) => e.code === 'PROFILE_UNSUPPORTED_FORMAT')
+  // 正常导入（混合：一个已知 + 一个未知文件——未知文件计入 files 但 dialect=unknown）
+  const imp = service.importFiles({ files: [{ name: 'op_statistic.csv', content: stat }, { name: 'junk.csv', content: 'a,b\n1,2\n' }, { name: 'kernel_details.csv', content: kern }] })
+  assert.equal(imp.state, 'ready')
+  assert.equal(imp.coverage.accepted, 24)
+  assert.equal(imp.files.length, 3)
+  assert.equal(imp.files.find((f) => f.path_redacted === 'junk.csv').dialect, 'unknown')
+  const det = service.detail(imp.session_id)
+  assert.equal(det.top_ops[0].op_type, 'LaserAttention')
+  assert.ok(Math.abs(det.top_ops[0].share - 0.8889) < 0.001)
+  assert.equal(det.instance_count, 21)
+  // demo（is_demo=true，落 demo realm）
+  const demo = service.importDemo()
+  assert.equal(demo.is_demo, true)
+  const demoDet = service.detail(demo.session_id)
+  assert.equal(demoDet.manifest.is_demo, true)
+  // 列表 + 删除
+  assert.equal(service.list().sessions.length, 2)
+  service.remove(demo.session_id)
+  assert.equal(service.list().sessions.length, 1)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('profile：REST 路由（导入/demo/列表/详情/报告/删除/401/超大）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 't131-rest-'))
+  const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true })
+  const configDir = join(dir, 'conf'); mkdirSync(configDir, { recursive: true })
+  writeFileSync(join(configDir, 'envs.json'), JSON.stringify({ version: 1, pollIntervalMs: 300000, envs: [] }))
+  const routes = []
+  const tools = new Map()
+  const ctx = makeCtx({ routes, tools, connection: { requestRejection: () => 0 } })
+  await apply(ctx, { dataDir, configDir })
+  const prefix = routes.find((r) => r.kind === 'prefix')
+  assert.ok(prefix)
+  const stat = read('profile/op_statistic.csv')
+  const kern = read('profile/kernel_details.csv')
+  const call = (p, o) => callRoute(prefix, `/api/ascend-perf${p}`, o)
+  // 导入
+  const imp = await call('/profile/imports', { method: 'POST', body: { files: [{ name: 'op_statistic.csv', content: stat }, { name: 'kernel_details.csv', content: kern }] } })
+  assert.equal(imp.status, 200)
+  assert.equal(imp.payload.coverage.accepted, 24)
+  const sid = imp.payload.session_id
+  // demo
+  const demo = await call('/profile/demo', { method: 'POST' })
+  assert.equal(demo.status, 200)
+  assert.equal(demo.payload.is_demo, true)
+  // 列表 / 详情 / 报告
+  const list = await call('/profile/sessions', { method: 'GET' })
+  assert.equal(list.status, 200)
+  assert.ok(list.payload.sessions.length >= 2)
+  const det = await call(`/profile/sessions/${sid}`, { method: 'GET' })
+  assert.equal(det.status, 200)
+  assert.equal(det.payload.top_ops[0].op_type, 'LaserAttention')
+  const rep = await call(`/profile/sessions/${sid}/report`, { method: 'GET' })
+  assert.equal(rep.status, 200)
+  assert.equal(rep.payload.rules.length, 5)
+  // 删除
+  const del = await call(`/profile/sessions/${sid}`, { method: 'DELETE' })
+  assert.equal(del.status, 200)
+  assert.equal(del.payload.deleted, true)
+  const gone = await call(`/profile/sessions/${sid}`, { method: 'GET' })
+  assert.equal(gone.status, 400)
+  assert.equal(gone.payload.error.code, 'PROFILE_SESSION_NOT_FOUND')
+  // 超大：HTTP 层（INPUT_TOO_LARGE）或服务层（PROFILE_TOO_LARGE）任一结构化拒绝即可
+  const big = await call('/profile/imports', { method: 'POST', body: { files: [{ name: 'big.csv', content: 'x'.repeat(4 * 1024 * 1024 + 10) }] } })
+  assert.equal(big.status, 400)
+  assert.ok(['INPUT_TOO_LARGE', 'PROFILE_TOO_LARGE'].includes(big.payload.error.code), `unexpected code ${big.payload.error.code}`)
+  // 工具注册（19 个）
+  const names = [...tools.keys()]
+  for (const tool of ['ascend_profile_import', 'ascend_profile_list', 'ascend_profile_report']) assert.ok(names.includes(tool), `缺少工具 ${tool}`)
+  // 401 鉴权
+  const routes401 = []
+  const ctx401 = makeCtx({ routes: routes401, connection: { requestRejection: () => 401 } })
+  await apply(ctx401, { dataDir, configDir })
+  const prefix401 = routes401.find((r) => r.kind === 'prefix')
+  const r401 = await callRoute(prefix401, '/api/ascend-perf/profile/sessions', { method: 'GET' })
+  assert.equal(r401.status, 401)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('profile：客户端 profile 子视图（导入入口/空态/摘要/Top 表/规则卡/证据展开）', () => {
+  const mod = loadClientModule()
+  const t = makeT(mod.__test.zh)
+  // 初始态：loading 骨架 + 导入入口
+  const section = mod.__test.ProfileSection({ t })
+  const tree = renderNode(section)
+  const texts = textOf(tree)
+  assert.ok(texts.includes(t('profile.title')))
+  assert.ok(findTestId(tree, 'profile.import.input'))
+  assert.ok(findTestId(tree, 'profile.demo'))
+  assert.ok(findTestId(tree, 'profile.loading'))
+  // 会话视图：fixture 数据驱动
+  const detail = {
+    manifest: {
+      session_id: 'prof-fixed0000000009', state: 'ready', is_demo: true,
+      source: { parser_version: 'ascend-pt-p1-v1' },
+      coverage: { accepted: 24, rejected: 0 },
+      files: [{ path_redacted: 'op_statistic.csv', dialect: 'ascend-pt-statistic-v1', validation: 'native_sample_verified' }],
+    },
+    top_ops: [
+      { op_type: 'LaserAttention', core_type: 'MIX_AIC', calls: 3, total_ns: '11707694', share: 0.8889, row: 'row:2' },
+      { op_type: 'Transpose', core_type: 'AI_VECTOR_CORE', calls: 15, total_ns: '1357767', share: 0.1031, row: 'row:3' },
+    ],
+    instance_count: 21,
+  }
+  const report = {
+    rules: [
+      { rule_id: 'R01', status: 'triggered', conclusion: '样本内占主导。', confidence: { description: 'high', causal: 'low' }, actions: ['核验实现'], evidence: [{ file: 'op_statistic.csv', row: 'row:2', fields: ['OP Type'], values: { op_type: 'LaserAttention' } }], thresholds: { single_share: 0.3 } },
+      { rule_id: 'R02', status: 'skipped', conclusion: '缺 counter。', missing_fields: ['aic_mac_ratio'], confidence: { description: 'low', causal: 'low' }, actions: [], evidence: [], thresholds: {} },
+    ],
+  }
+  const view = renderNode(mod.__test.ProfileSessionView({ detail, report, expandedRuleId: 'R01', onToggleRule: () => {}, t }))
+  const viewText = textOf(view)
+  assert.ok(findTestId(view, 'profile.summary'))
+  assert.ok(viewText.includes('prof-fixed0000000009'))
+  assert.ok(viewText.includes(t('profile.demoBadge')))
+  assert.ok(viewText.includes('24'))
+  assert.ok(findTestId(view, 'profile.top'))
+  assert.ok(findTestId(view, 'profile.top.LaserAttention'))
+  assert.ok(viewText.includes('LaserAttention'))
+  assert.ok(viewText.includes('88.9%'))
+  assert.ok(findTestId(view, 'profile.rule.R01'))
+  assert.ok(viewText.includes(t('profile.rule.triggered')))
+  assert.ok(findTestId(view, 'profile.rule.R01.evidence')) // 展开的证据
+  assert.ok(viewText.includes('row:2'))
+  assert.ok(findTestId(view, 'profile.rule.R02'))
+  assert.ok(viewText.includes(t('profile.rule.skipped')))
+  // 未展开的 R02 证据区不渲染
+  assert.ok(!findTestId(view, 'profile.rule.R02.evidence'))
+  // 规则卡单独渲染 + 切换按钮
+  const card = renderNode(mod.__test.ProfileRuleCard({ rule: report.rules[0], expanded: false, onToggle: () => {}, t }))
+  const toggleBtn = findTestId(card, 'profile.rule.R01.toggle')
+  assert.ok(toggleBtn)
+  assert.equal(toggleBtn.props['aria-expanded'], 'false')
+  // locale 与 client 字典平铺键一致
+  for (const lang of ['zh', 'en']) {
+    const locale = JSON.parse(readFileSync(join(here, '..', 'locale', `${lang}.json`), 'utf8'))
+    const dict = lang === 'zh' ? mod.__test.zh : mod.__test.en
+    const NESTED = new Set(Object.keys(locale).filter((k) => typeof locale[k] === 'object'))
+    for (const [k, v] of Object.entries(dict)) {
+      if (NESTED.has(k)) continue
+      assert.equal(locale[k], v, `${lang} locale 键不一致：${k}`)
+    }
+    assert.equal(locale['profile.title'], dict['profile.title'])
+  }
+})
+
+
+/* ================== t133：t132 findings 修复（R05 真实分母/R04 容差/strict 默认/白名单/负值 NaN/越界/schema 校验/NS 安全/串联） ================== */
+
+const t133StatOp = (type, calls, total, extraMetrics = []) => ({ session_id: 'prof-aaaabbbbccccdddd', op_id: 'a'.repeat(16), record_kind: 'aggregate', op_type: type, core_type: 'AI_VECTOR_CORE', calls, total_ns: total, metrics: extraMetrics, sources: [{ source_id: 'src-s', locator: 'row:2', fields: [] }], missing_reasons: {} })
+const t133InstOp = (type, total, row, extraMetrics = []) => ({ session_id: 'prof-aaaabbbbccccdddd', op_id: 'b'.repeat(16), record_kind: 'instance', op_type: type, core_type: 'AI_VECTOR_CORE', calls: 1, total_ns: total, metrics: extraMetrics, sources: [{ source_id: 'src-k', locator: `row:${row}`, fields: [] }], missing_reasons: {} })
+const t133Manifest = () => ({
+  session_id: 'prof-aaaabbbbccccdddd', revision: 1,
+  files: [
+    { source_id: 'src-s', path_redacted: 'op_statistic.csv', dialect: PROFILE_DIALECTS.statistic.id },
+    { source_id: 'src-k', path_redacted: 'kernel_details.csv', dialect: PROFILE_DIALECTS.kernel.id },
+  ],
+})
+
+test('t133 T132-01：R05 真实分母——median<20us 但 share<20% 必须 not_triggered', () => {
+  const dir = mkdtempSync(join(tmpdir(), 't133-r5reg-'))
+  const service = createProfileService({ dataDir: dir })
+  const header = 'Device_id,Task ID,Stream ID,Name,Type,OP State,Accelerator Core,Start Time(us),Duration(us)\n'
+  const tiny = Array.from({ length: 150 }, (_, i) => `0,${100 + i},47,Tiny${i},TinyOp,Done,AI_VECTOR_CORE,${i}.000,10.000`).join('\n')
+  const huge = Array.from({ length: 3 }, (_, i) => `0,${300 + i},47,Huge${i},HugeOp,Done,AI_VECTOR_CORE,0.000,500000.000`).join('\n')
+  const imp = service.importFiles({ files: [{ name: 'kernel_details.csv', content: header + tiny + '\n' + huge + '\n' }] })
+  const r5 = service.report(imp.session_id).rules.find((r) => r.rule_id === 'R05')
+  // 旧实现 share=total/total 恒 1.0 → 必然 triggered；新实现用真实分母（全部实例总时长）
+  assert.equal(r5.status, 'not_triggered')
+  const m = Object.fromEntries(r5.metrics.map((x) => [x.key, x.value]))
+  assert.equal(m.r05_denominator_ns, (1500000 + 3 * 500000000).toString())
+  assert.equal(m.r05_numerator_ns, '1500000')
+  assert.ok(m.small_task_share < 0.001)
+  assert.ok(r5.conclusion.includes('份额不足'))
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('t133 T132-05：R04 count 容差 max(1%, 舍入)——100 vs 99 不触发、100 vs 98 触发', () => {
+  const mk = (instCount) => evaluateProfileRules({
+    manifest: t133Manifest(),
+    ops: [
+      t133StatOp('A', 100, '100000000'),
+      ...Array.from({ length: instCount }, (_, i) => t133InstOp('A', '1000000', i + 2)),
+    ],
+  }).rules.find((r) => r.rule_id === 'R04')
+  // 旧实现 callsDelta>0 即触发：99 也会 triggered
+  assert.equal(mk(99).status, 'not_triggered')
+  assert.equal(mk(100).status, 'not_triggered')
+  const r98 = mk(98)
+  assert.equal(r98.status, 'triggered')
+  const detail = r98.metrics.find((x) => x.key === 'mismatch_detail').value
+  assert.ok(detail.some((d) => d.reason === 'count_mismatch'))
+})
+
+test('t133 T132-06：R04 扫描 ratio 越界（source_ratio 1.5 / aic_mac_ratio -0.5）写 mismatch+行号', () => {
+  const out = evaluateProfileRules({
+    manifest: t133Manifest(),
+    ops: [
+      t133StatOp('A', 1, '1000', [{ key: 'source_ratio', value: 1.5, unit: 'ratio', semantic_status: 'source_reported' }]),
+      t133InstOp('A', '1000', 9, [{ key: 'aic_mac_ratio', value: -0.5, unit: 'ratio', semantic_status: 'verified' }]),
+    ],
+  })
+  const r4 = out.rules.find((r) => r.rule_id === 'R04')
+  assert.equal(r4.status, 'triggered')
+  const detail = r4.metrics.find((x) => x.key === 'mismatch_detail').value
+  assert.ok(detail.some((d) => d.reason === 'ratio_out_of_range' && d.field === 'source_ratio' && d.value === 1.5 && String(d.row).startsWith('row:')))
+  assert.ok(detail.some((d) => d.reason === 'ratio_out_of_range' && d.field === 'aic_mac_ratio' && d.value === -0.5))
+})
+test('t135 T134-02：R04 每条 evidence 四要素非空（含 overview 代表行 locator）', () => {
+  const out = evaluateProfileRules({
+    manifest: t133Manifest(),
+    ops: [
+      t133StatOp('A', 100, '100000000', [{ key: 'source_ratio', value: 1.5, unit: 'ratio', semantic_status: 'source_reported' }]),
+      ...Array.from({ length: 98 }, (_, i) => t133InstOp('A', '1000000', i + 2)),
+    ],
+  })
+  const r4 = out.rules.find((r) => r.rule_id === 'R04')
+  assert.equal(r4.status, 'triggered')
+  assert.ok(r4.evidence.length >= 3, 'overview 2 条 + mismatch 至少 1 条')
+  for (const ev of r4.evidence) {
+    assert.ok(typeof ev.source_id === 'string' && ev.source_id.length > 0, `source_id 非空：${JSON.stringify(ev).slice(0, 120)}`)
+    assert.ok(typeof ev.locator === 'string' && ev.locator.startsWith('row:'), `locator 非空且为行定位：${JSON.stringify(ev).slice(0, 120)}`)
+    assert.ok(typeof ev.transform === 'string' && ev.transform.length > 0, `transform 非空：${JSON.stringify(ev).slice(0, 120)}`)
+    assert.ok(ev.values != null && Object.keys(ev.values).length > 0, `values 非空：${JSON.stringify(ev).slice(0, 120)}`)
+  }
+  // overview 两条的 locator 是代表行（首个聚合 row:2 / 首个实例 row:2），不再是空串
+  assert.equal(r4.evidence[0].locator, 'row:2')
+  assert.equal(r4.evidence[1].locator, 'row:2')
+})
+
+test('t133 T132-02/03：负 Total / 负 Min / Min=NaN / kernel Start=NaN → 行级 rejected（不再静默）', () => {
+  const header = 'Device_id,OP Type,Core Type,Count,Total Time(us),Min Time(us),Ratio(%)\n'
+  const f = { file: { source_id: 's1', path_redacted: 'x' }, sessionId: 'prof-t133a' }
+  const negTotal = parseOpStatistic(header + '0,A,AI_VECTOR_CORE,1,-1.500,0.5,0.1\n', f)
+  assert.equal(negTotal.ops.length, 0)
+  assert.equal(negTotal.rejected[0].reason, 'negative_duration')
+  assert.equal(negTotal.rejected[0].field, 'Total Time(us)')
+  const negMin = parseOpStatistic(header + '0,B,AI_VECTOR_CORE,2,3.000,-0.5,0.3\n', f)
+  assert.equal(negMin.ops.length, 0)
+  assert.equal(negMin.rejected[0].reason, 'negative_duration')
+  assert.equal(negMin.rejected[0].field, 'Min Time(us)')
+  // NaN 不再是 raw-empty：Min=NaN → 整行 rejected（带行号/字段）
+  const nanMin = parseOpStatistic(header + '0,C,AI_VECTOR_CORE,2,3.000,NaN,0.3\n', f)
+  assert.equal(nanMin.ops.length, 0)
+  assert.equal(nanMin.rejected[0].reason, 'not_a_decimal_us')
+  assert.equal(nanMin.rejected[0].field, 'Min Time(us)')
+  assert.ok(nanMin.rejected[0].row >= 1)
+  const kHeader = 'Device_id,Task ID,Stream ID,Name,Type,OP State,Accelerator Core,Start Time(us),Duration(us)\n'
+  const startNaN = parseKernelDetails(kHeader + '0,12,47,K3,Bad,Done,AI_VECTOR_CORE,NaN,5.000\n', { file: { source_id: 's2', path_redacted: 'y' }, sessionId: 'prof-t133b' })
+  assert.equal(startNaN.ops.length, 0)
+  assert.equal(startNaN.rejected[0].field, 'Start Time(us)')
+  assert.equal(startNaN.rejected[0].reason, 'not_a_decimal_us')
+  // 原始空值仍保持缺省（不误伤）
+  const startEmpty = parseKernelDetails(kHeader + '0,13,47,K4,Good,Done,AI_VECTOR_CORE,,5.000\n', { file: { source_id: 's2', path_redacted: 'y' }, sessionId: 'prof-t133c' })
+  assert.equal(startEmpty.ops.length, 1)
+})
+
+test('t133 T132-04：未知额外列 → unsupported（unknown_columns），不进定量统计', () => {
+  const stat = read('profile/op_statistic.csv')
+  const weird = stat.replace('Ratio(%)', 'Ratio(%),WeirdCol').split('\n').map((l) => (l.includes('WeirdCol') || l === '' ? l : l + ',x')).join('\n')
+  const det = detectProfileDialect(weird)
+  assert.equal(det.dialect, 'unknown')
+  assert.equal(det.reason, 'unknown_columns')
+  assert.deepEqual(det.unknown, ['WeirdCol'])
+  const dir = mkdtempSync(join(tmpdir(), 't133-wl-'))
+  const service = createProfileService({ dataDir: dir })
+  assert.throws(() => service.importFiles({ files: [{ name: 'weird.csv', content: weird }] }), (e) => e.code === 'PROFILE_UNSUPPORTED_FORMAT')
+  // 已知白名单的子集（缺可选列）仍可判型
+  assert.equal(detectProfileDialect('Device_id,OP Type,Core Type,Count,Total Time(us),Ratio(%)\n0,A,AI_VECTOR_CORE,1,1.0,0.1\n').dialect, 'statistic')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('t133 T132-08：默认 strict 拒绝整 session；显式 partial 才落库并标 partial', () => {
+  const dir = mkdtempSync(join(tmpdir(), 't133-strict-'))
+  const service = createProfileService({ dataDir: dir })
+  const good = read('profile/op_statistic.csv')
+  const bad = 'Device_id,OP Type,Core Type,Count,Total Time(us),Ratio(%)\n0,A,AI_VECTOR_CORE,abc,1.000,0.1\n'
+  // 一好一坏，默认（strict）→ 整个 session 不落库
+  assert.throws(() => service.importFiles({ files: [{ name: 'good.csv', content: good }, { name: 'bad.csv', content: bad }] }), (e) => e.code === 'PROFILE_REJECTED_RECORDS')
+  assert.equal(service.list().sessions.length, 0)
+  // 显式 partial → 落库 + state=partial + coverage.rejected
+  const imp = service.importFiles({ files: [{ name: 'good.csv', content: good }, { name: 'bad.csv', content: bad }], policy: 'partial' })
+  assert.equal(imp.state, 'partial')
+  assert.equal(imp.coverage.rejected, 1)
+  assert.equal(imp.coverage.accepted, 3)
+  assert.equal(service.list().sessions.length, 1)
+  // 未知策略 → 结构化拒绝
+  assert.throws(() => service.importFiles({ files: [{ name: 'g.csv', content: good }], policy: 'lax' }), (e) => e.code === 'PROFILE_INVALID_POLICY')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('t133 T132-09：越界/非有限 ratio counter 不进 metrics，R02 走 skipped', () => {
+  const header = 'Device_id,Task ID,Stream ID,Name,Type,OP State,Accelerator Core,Start Time(us),Duration(us),aic_mac_ratio\n'
+  const rows = [
+    '0,10,47,K1,LaserAttention,Done,MIX_AIC,1.000,120.000,1.5',
+    '0,11,47,K2,LaserAttention,Done,MIX_AIC,2.000,121.000,-0.5',
+  ].join('\n')
+  const parsed = parseKernelDetails(header + rows + '\n', { file: { source_id: 's', path_redacted: 'x' }, sessionId: 'prof-t133d' })
+  assert.equal(parsed.ops.length, 2)
+  for (const op of parsed.ops) {
+    assert.ok(!op.metrics.some((m) => m.key === 'aic_mac_ratio'), '越界 ratio 不得进入 metrics')
+  }
+  assert.ok(parsed.warnings.some((w) => w.code === 'PROFILE_RATIO_OUT_OF_RANGE'))
+  const dir = mkdtempSync(join(tmpdir(), 't133-r9-'))
+  const service = createProfileService({ dataDir: dir })
+  const imp = service.importFiles({ files: [{ name: 'kernel_details.csv', content: header + rows + '\n' }] })
+  const r2 = service.report(imp.session_id).rules.find((r) => r.rule_id === 'R02')
+  assert.equal(r2.status, 'skipped')
+  assert.ok(r2.missing_fields.includes('aic_mac_ratio'))
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('t133 T132-12：total_ns 非整数字符串不抛 TypeError，结构化降级', () => {
+  const allInvalid = evaluateProfileRules({ manifest: t133Manifest(), ops: [t133StatOp('A', 1, '12.5')] })
+  const r1 = allInvalid.rules.find((r) => r.rule_id === 'R01')
+  assert.equal(r1.status, 'skipped')
+  assert.ok(r1.missing_fields.some((f) => String(f).startsWith('invalid_total_ns_records')))
+  const mixed = evaluateProfileRules({ manifest: t133Manifest(), ops: [t133StatOp('A', 1, '12.5'), t133StatOp('B', 2, '3000')] })
+  const r1m = mixed.rules.find((r) => r.rule_id === 'R01')
+  assert.notEqual(r1m.status, 'skipped')
+  assert.ok(r1m.missing_fields.some((f) => String(f).startsWith('invalid_total_ns_records')))
+  // 实例侧：R05 对非整数 total_ns 也不抛
+  const r5 = evaluateProfileRules({ manifest: t133Manifest(), ops: Array.from({ length: 3 }, (_, i) => t133InstOp('T', '1.5', i + 2)) }).rules.find((r) => r.rule_id === 'R05')
+  assert.ok(['skipped', 'not_triggered'].includes(r5.status))
+})
+
+test('t133 T132-11：REST+DOM 级联（demo 导入→session→detail→report→展开→删除，真实路由载荷驱动渲染）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 't133-cascade-'))
+  const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true })
+  const configDir = join(dir, 'conf'); mkdirSync(configDir, { recursive: true })
+  writeFileSync(join(configDir, 'envs.json'), JSON.stringify({ version: 1, pollIntervalMs: 300000, envs: [] }))
+  const routes = []
+  const ctx = makeCtx({ routes, tools: new Map(), connection: { requestRejection: () => 0 } })
+  await apply(ctx, { dataDir, configDir })
+  const prefix = routes.find((r) => r.kind === 'prefix')
+  const call = (p, o) => callRoute(prefix, `/api/ascend-perf${p}`, o)
+  const demo = await call('/profile/demo', { method: 'POST' })
+  assert.equal(demo.status, 200)
+  const sid = demo.payload.session_id
+  const list = await call('/profile/sessions', { method: 'GET' })
+  assert.ok(list.payload.sessions.some((s) => s.session_id === sid))
+  const det = await call(`/profile/sessions/${sid}`, { method: 'GET' })
+  assert.equal(det.payload.top_ops[0].op_type, 'LaserAttention')
+  const rep = await call(`/profile/sessions/${sid}/report`, { method: 'GET' })
+  assert.equal(rep.payload.rules.length, 5)
+  // DOM 级联：用真实 detail/report 载荷（非 mock）渲染会话视图与规则卡
+  const mod = loadClientModule()
+  const t = makeT(mod.__test.zh)
+  const view = renderNode(mod.__test.ProfileSessionView({ detail: det.payload, report: rep.payload, expandedRuleId: 'R01', onToggleRule: () => {}, t }))
+  assert.ok(findTestId(view, 'profile.summary'))
+  assert.ok(findTestId(view, 'profile.top'))
+  assert.ok(findTestId(view, 'profile.top.LaserAttention'))
+  assert.ok(findTestId(view, 'profile.rule.R01'))
+  assert.ok(findTestId(view, 'profile.rule.R01.evidence'))
+  assert.ok(textOf(view).includes('row:2'), '真实证据行号应渲染')
+  const r01 = rep.payload.rules.find((r) => r.rule_id === 'R01')
+  assert.equal(r01.status, 'triggered')
+  const card = renderNode(mod.__test.ProfileRuleCard({ rule: r01, expanded: false, onToggle: () => {}, t }))
+  assert.equal(findTestId(card, 'profile.rule.R01.toggle').props['aria-expanded'], 'false')
+  const del = await call(`/profile/sessions/${sid}`, { method: 'DELETE' })
+  assert.equal(del.payload.deleted, true)
+  rmSync(dir, { recursive: true, force: true })
 })
 
 await Promise.all(pending)

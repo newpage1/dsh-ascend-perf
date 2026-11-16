@@ -9,9 +9,10 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
 
-const files = ['index.js', 'client.js', 'deploy.js', 'deploy-exec.js', 'tune.js', 'tune-exec.js', 'cordis.patch.yml', 'icon.svg']
+const files = ['index.js', 'client.js', 'profile.js', 'deploy.js', 'deploy-exec.js', 'tune.js', 'tune-exec.js', 'cordis.patch.yml', 'icon.svg']
 for (const file of files) cpSync(join(root, file), join(out, file))
 cpSync(join(root, 'locale'), join(out, 'locale'), { recursive: true })
+cpSync(join(root, 'fixtures', 'profile'), join(out, 'fixtures', 'profile'), { recursive: true })
 cpSync(join(root, 'scripts', 'market-readme.md'), join(out, 'README.md'))
 cpSync(join(root, 'LICENSE'), join(out, 'LICENSE'))
 
@@ -49,12 +50,14 @@ const marketPkg = {
   files: [
     'index.js',
     'client.js',
+    'profile.js',
     'deploy.js',
     'deploy-exec.js',
     'tune.js',
     'tune-exec.js',
     'cordis.patch.yml',
     'locale/*.json',
+    'fixtures/profile/*',
     'icon.svg',
     'README.md',
     'LICENSE',

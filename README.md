@@ -222,6 +222,49 @@ ascend_perf_insight { "baseline_run_id": "run_...", "candidate_run_id": "run_...
 - 8 条洞察规则：HBM 压力、TTFT 回归、TPOT 回归、并发饱和、成功率低、高温、功耗变化、热点集中；最多 20 条，未触发前置条件写入 `skipped_rules`；
 - 导出 Markdown/JSON（≤64 KiB），CSV 字段做公式注入防护。
 
+#### msprof Profile 分析（P1：导入 + 展示 + R01–R05）
+
+调优段内的第四个小节 **msprof Profile 分析（P1）** 回答的是「**为什么慢**」（算子层面证据），与上文 benchmark 对比（「慢多少」）互补，互不替代。
+
+**导入**：面板「导入 CSV」选择 msprof 导出的 `op_statistic.csv` / `kernel_details.csv`（可多选；按**表头指纹**判型，不看文件名），或点「加载演示 profile」用内置真实脱敏样本（见 `fixtures/profile/`，源自 910B3 微 probe 的 E1/E3 导出）。限额：单文件 ≤4 MiB、总量 ≤8 MiB、≤8 个文件，超限结构化拒绝（`PROFILE_TOO_LARGE`）。未知表头返回 `PROFILE_UNSUPPORTED_FORMAT`，不猜 schema。数据只落本机私有目录 `~/.local/share/dsh-ascend-perf/profile-v1/`（0700/0600、原子写），与既有 `runs`/`hotspots` 完全独立；旧 `op_summary` 热点导入路径不受影响。
+
+**解析口径**：
+
+- 时间单位 us→ns 用十进制定点换算（非浮点乘法）；超过 3 位小数时四舍五入到 ns 并记 `precisionLoss`。
+- `Count=0`：保留行、`mean/min/max` 置空并记 `missing_reasons`；`NaN`（不算空值）/负时长/非法数 → 行级 `rejected`（带字段与行号）。
+- 默认 **strict** 导入策略：只要有行级 `rejected`，整个 session 不落库（`PROFILE_REJECTED_RECORDS`）；确认要跳过坏行必须显式传 `policy='partial'`，落库后 session 标 `partial`。
+- 表头白名单：判型只认已验证的列集合（statistic 9 列 / kernel 45 列，允许可选列缺席）；出现未知额外列 → 该文件 `unsupported`（`unknown_columns`），不进任何定量统计。
+- `Ratio(%)` / `cube_utilization(%)` 只按 `source_reported` 语义保留（/100），不当硬件利用率；`aic_mac_ratio` 等 PIPE counter 按 `verified` 语义（0..1）。
+- 每条记录 100% 保留来源（`source_id` + `row:N` + 字段名）。
+- 聚合视图（op_statistic）与实例视图（kernel_details）分表存储，绝不相加。
+
+**R01–R05 证据规则**（确定性规则，无 LLM；每条输出 `status=triggered|not_triggered|skipped`、`evidence`（文件/行/字段/值）、`conclusion`、`actions`、`confidence`、`missing_fields`）：
+
+| 规则 | 问题 | 触发（摘要） | 缺数据时 |
+| --- | --- | --- | --- |
+| R01 | 热点是否集中在单一算子类 | 单类份额 ≥30% 或 Top5 ≥70%（分母=已导入聚合行总和） | 无聚合视图 → skipped |
+| R02 | Cube/MAC 管线占比是否偏低 | MIX/AI Core、duration≥100us 实例的 duration 加权 `aic_mac_ratio`<0.5 且覆盖计算时长 ≥20% | 未采集 PIPE counter → skipped（**不**从名称推断利用率） |
+| R03 | Vector 转换开销是否可见 | Transpose+Cast 份额 ≥10% 且调用 ≥10 次 | 无聚合视图 → skipped |
+| R04 | 统计/实例两视图是否一致 | Count 按 max(1%, 0)、Total 按 max(1%, 1000ns 舍入容差) 比较，严格超出才告警；同时扫描 `source_ratio` 与 PIPE counter 的 [0,1] 越界（mismatch 带行号） | 只有单份视图 → skipped |
+| R05 | 任务粒度是否偏小 | 按 op_type 分组：某类 ≥100 实例、中位数 <20us 且该类时长占**全部实例总时长**（真实分母）≥20%；分子/分母/share 写入 metrics | 没有任何类 ≥100 实例 → skipped（不按均值伪造中位数） |
+
+规则文案不输出「必然提速 N%」之类的承诺；每条建议都要求改动后维持精度/误差门槛再做 A/B。
+
+**REST 与工具**（均沿用 fail-closed 鉴权）：
+
+```text
+POST /api/ascend-perf/profile/imports     { "files": [{ "name": "op_statistic.csv", "content": "<CSV 文本>" }, ...] }
+POST /api/ascend-perf/profile/demo
+GET  /api/ascend-perf/profile/sessions
+GET  /api/ascend-perf/profile/sessions/:id
+GET  /api/ascend-perf/profile/sessions/:id/report
+DELETE /api/ascend-perf/profile/sessions/:id
+
+ascend_profile_import { "files": [...] }
+ascend_profile_list {}
+ascend_profile_report { "session_id": "prof-..." }
+```
+
 #### 设备状态工具（Host 侧，只读）
 
 ```text

@@ -17,6 +17,7 @@ import { isAbsolute, join } from 'node:path'
 import { TUNE_SCHEMA, TuneService, createTuneRoutes, createTuneTools } from './tune.js'
 import { DeployPlanService, createDeployRoutes, createDeployTools } from './deploy.js'
 import { DeployRunService, createDeployRunRoutes, createDeployRunTools } from './deploy-exec.js'
+import { ProfileError, createProfileRoutes, createProfileService, createProfileTools } from './profile.js'
 
 export const name = 'dsh-ascend-perf'
 export const inject = ['tools', 'subprocess', 'webServer']
@@ -1880,6 +1881,17 @@ export function apply(ctx, rawConfig = {}) {
   const deployRunToolDefs = deployRun ? createDeployRunTools(deployRun) : []
   const deployRunRouteDefs = deployRun ? createDeployRunRoutes(deployRun) : []
 
+  /* ---------------- msprof profile P1（私有 profile-v1 存储） ---------------- */
+  let profileInitError = null
+  let profileService = null
+  try {
+    profileService = createProfileService({ dataDir: cfg.dataDir })
+  } catch (error) {
+    profileInitError = { code: error instanceof ProfileError ? error.code : 'STORE_IO', message: String(error?.message ?? error) }
+  }
+  const profileToolDefs = profileService ? createProfileTools(profileService) : []
+  const profileRouteDefs = profileService ? createProfileRoutes(profileService) : []
+
   const visibleRuns = () => (demoForced ? store.demoRuns : store.runs)
   const visibleSnapshots = () => (demoForced ? store.demoSnapshots : store.snapshots)
   const latestVisibleSnapshot = () => store.latestSnapshot(visibleSnapshots())
@@ -2321,7 +2333,7 @@ export function apply(ctx, rawConfig = {}) {
   ]
 
   ctx.effect(() => {
-    const disposers = toolDefs.concat(tuneToolDefs, deployToolDefs, deployRunToolDefs).map((def) => ctx.tools.register(def))
+    const disposers = toolDefs.concat(tuneToolDefs, deployToolDefs, deployRunToolDefs, profileToolDefs).map((def) => ctx.tools.register(def))
     return () => disposers.forEach((dispose) => dispose())
   }, 'ascend-perf: agent tools')
 
@@ -2535,6 +2547,7 @@ export function apply(ctx, rawConfig = {}) {
     ...tuneRouteDefs,
     ...deployRouteDefs,
     ...deployRunRouteDefs,
+    ...profileRouteDefs,
   ]
 
   async function demoSeed() {

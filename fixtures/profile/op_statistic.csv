@@ -1,0 +1,4 @@
+Device_id,OP Type,Core Type,Count,Total Time(us),Min Time(us),Avg Time(us),Max Time(us),Ratio(%)
+0,LaserAttention,MIX_AIC,3,11707.694,3893.318,3902.565,3913.578,88.894
+0,Transpose,AI_VECTOR_CORE,15,1357.767,50.321,90.518,120.522,10.309
+0,Cast,AI_VECTOR_CORE,3,105.002,26.941,35.001,39.301,0.797

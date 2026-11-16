@@ -44,6 +44,42 @@ window.__ModuleLoader__.load({
       'action.refresh': '刷新状态',
       'action.import': '导入运行',
       'action.loadDemo': '加载演示数据',
+      'profile.title': 'msprof Profile 分析（P1）',
+      'profile.desc': '导入 msprof 导出的 op_statistic.csv / kernel_details.csv，定位“为什么慢”；与下方 benchmark 对比（“慢多少”）互补，互不替代。',
+      'profile.import': '导入 CSV',
+      'profile.importHint': '选择一个或多个 msprof 导出的 CSV 文件（按表头指纹识别，不看文件名；单文件 ≤4 MiB、总量 ≤8 MiB）',
+      'profile.demo': '加载演示 profile',
+      'profile.sessions': '已导入 session',
+      'profile.sessionsEmpty': '尚无 profile session——导入 CSV 或加载演示数据开始分析。',
+      'profile.select': '选择 session',
+      'profile.refresh': '刷新',
+      'profile.delete': '删除',
+      'profile.deleted': 'session 已删除',
+      'profile.summary': '会话摘要',
+      'profile.coverage': '解析覆盖',
+      'profile.accepted': '接受记录',
+      'profile.rejected': '拒绝记录',
+      'profile.instances': '实例记录数',
+      'profile.topOps': 'Top 算子（聚合视图，按总时长）',
+      'profile.col.type': '类型',
+      'profile.col.core': '执行核',
+      'profile.col.calls': '次数',
+      'profile.col.total': '总时长 (ns)',
+      'profile.col.share': '份额',
+      'profile.col.row': '来源行',
+      'profile.rules': 'R01–R05 证据规则',
+      'profile.rule.triggered': '触发',
+      'profile.rule.not_triggered': '未触发',
+      'profile.rule.skipped': '跳过',
+      'profile.evidence': '证据',
+      'profile.actions': '建议动作',
+      'profile.missing': '缺失字段',
+      'profile.confidence': '置信度',
+      'profile.loading': '正在加载 profile…',
+      'profile.tooLarge': '输入过大（单文件 ≤4 MiB、总量 ≤8 MiB），已拒绝。',
+      'profile.unsupported': '没有可识别的 profile 文件：表头指纹未命中已验证格式。',
+      'profile.demoBadge': '演示',
+      'profile.importDone': '导入完成：{n} 条记录',
       'action.exitDemo': '退出演示',
       'action.compare': '开始对比',
       'action.export': '导出摘要',
@@ -410,6 +446,42 @@ window.__ModuleLoader__.load({
       'action.refresh': 'Refresh status',
       'action.import': 'Import run',
       'action.loadDemo': 'Load demo data',
+      'profile.title': 'msprof Profile analysis (P1)',
+      'profile.desc': 'Import msprof-exported op_statistic.csv / kernel_details.csv to locate "why it is slow"; complements the benchmark comparison below ("how slow") — neither replaces the other.',
+      'profile.import': 'Import CSV',
+      'profile.importHint': 'Pick one or more msprof-exported CSV files (identified by header fingerprint, not filename; ≤4 MiB per file, ≤8 MiB total)',
+      'profile.demo': 'Load demo profile',
+      'profile.sessions': 'Imported sessions',
+      'profile.sessionsEmpty': 'No profile session yet — import CSVs or load the demo data to start.',
+      'profile.select': 'Select session',
+      'profile.refresh': 'Refresh',
+      'profile.delete': 'Delete',
+      'profile.deleted': 'Session deleted',
+      'profile.summary': 'Session summary',
+      'profile.coverage': 'Parse coverage',
+      'profile.accepted': 'Accepted records',
+      'profile.rejected': 'Rejected records',
+      'profile.instances': 'Instance records',
+      'profile.topOps': 'Top operators (aggregate view, by total time)',
+      'profile.col.type': 'Type',
+      'profile.col.core': 'Core',
+      'profile.col.calls': 'Calls',
+      'profile.col.total': 'Total (ns)',
+      'profile.col.share': 'Share',
+      'profile.col.row': 'Source row',
+      'profile.rules': 'R01–R05 evidence rules',
+      'profile.rule.triggered': 'Triggered',
+      'profile.rule.not_triggered': 'Not triggered',
+      'profile.rule.skipped': 'Skipped',
+      'profile.evidence': 'Evidence',
+      'profile.actions': 'Suggested actions',
+      'profile.missing': 'Missing fields',
+      'profile.confidence': 'Confidence',
+      'profile.loading': 'Loading profile…',
+      'profile.tooLarge': 'Input too large (≤4 MiB per file, ≤8 MiB total) — rejected.',
+      'profile.unsupported': 'No recognizable profile file: header fingerprint did not match a verified format.',
+      'profile.demoBadge': 'DEMO',
+      'profile.importDone': 'Imported: {n} records',
       'action.exitDemo': 'Exit demo',
       'action.compare': 'Compare',
       'action.export': 'Export summary',
@@ -2063,6 +2135,185 @@ window.__ModuleLoader__.load({
       )
     }
 
+
+    /* ---------------- msprof profile P1（t131）：导入 + 摘要 + Top 算子 + R01–R05 ---------------- */
+
+    const PROFILE_RULE_TONE = { triggered: 'warn', not_triggered: 'success', skipped: undefined }
+
+    function ProfileRuleCard({ rule, expanded, onToggle, t }) {
+      if (!rule) return null
+      const tone = PROFILE_RULE_TONE[rule.status] ?? undefined
+      const head = `${rule.rule_id} · ${t(`profile.rule.${rule.status}`)}`
+      return h('div', { 'data-testid': `profile.rule.${rule.rule_id}`, style: { ...s.card, borderLeft: `3px solid ${rule.status === 'triggered' ? c.warn : rule.status === 'not_triggered' ? c.success : c.border}` } },
+        h('div', { style: s.row },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
+            h('span', { style: { ...s.tag, color: c.text } }, rule.rule_id),
+            h(Pill, { tone }, t(`profile.rule.${rule.status}`)),
+            rule.confidence ? h('span', { style: s.muted }, `${t('profile.confidence')}: ${rule.confidence.description}${rule.confidence.causal ? ` (causal ${rule.confidence.causal})` : ''}`) : null,
+          ),
+          h('button', { type: 'button', 'data-testid': `profile.rule.${rule.rule_id}.toggle`, style: s.buttonGhost, onClick: onToggle, 'aria-expanded': expanded ? 'true' : 'false' }, t('profile.evidence')),
+        ),
+        rule.conclusion ? h('div', { style: { marginTop: '6px', fontSize: '12px', lineHeight: 1.5 } }, rule.conclusion) : null,
+        Array.isArray(rule.actions) && rule.actions.length > 0
+          ? h('div', { style: { marginTop: '4px' } }, h('div', { style: s.muted }, `${t('profile.actions')}:`), ...rule.actions.map((a, i) => h('div', { key: i, style: { fontSize: '12px', lineHeight: 1.5 } }, `• ${a}`)))
+          : null,
+        Array.isArray(rule.missing_fields) && rule.missing_fields.length > 0
+          ? h('div', { style: { ...s.muted, marginTop: '4px' } }, `${t('profile.missing')}: ${rule.missing_fields.join(', ')}`)
+          : null,
+        expanded
+          ? h('div', { 'data-testid': `profile.rule.${rule.rule_id}.evidence`, style: { marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '4px' } },
+            ...((rule.evidence ?? []).map((ev, i) => h('div', { key: i, style: { ...s.insight, borderLeft: `3px solid ${c.border}` } },
+              h('div', { style: s.code }, `${ev.file ?? ''} ${ev.row ?? ''}`),
+              h('div', { style: s.code }, `${t('profile.evidence')} · ${(ev.fields ?? []).join(', ')}`),
+              ev.values != null ? h('div', { style: s.code }, JSON.stringify(ev.values)) : null,
+            ))),
+            h('div', { style: s.muted }, `${t('profile.confidence')} thresholds: ${JSON.stringify(rule.thresholds ?? {})}`),
+          )
+          : null,
+      )
+    }
+
+    function ProfileSessionView({ detail, report, expandedRuleId, onToggleRule, t }) {
+      if (!detail) return null
+      const { manifest, top_ops: topOps, instance_count: instanceCount } = detail
+      return h('div', { 'data-testid': 'profile.view', style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+        h('div', { 'data-testid': 'profile.summary', style: s.card },
+          h('div', { style: s.row },
+            h('span', { style: { ...s.tag, fontFamily: 'var(--dsw-alias-mono-font-family, ui-monospace, monospace)' } }, manifest.session_id),
+            manifest.is_demo ? h(Pill, { tone: 'info' }, t('profile.demoBadge')) : null,
+            h('span', { style: s.muted }, `state: ${manifest.state} · parser: ${manifest.source?.parser_version ?? ''}`),
+          ),
+          h('div', { style: { ...s.muted, marginTop: '4px' } },
+            `${t('profile.coverage')}: ${t('profile.accepted')} ${manifest.coverage.accepted} · ${t('profile.rejected')} ${manifest.coverage.rejected} · ${t('profile.instances')} ${instanceCount}`),
+          h('div', { style: { ...s.muted, marginTop: '2px' } },
+            `${t('profile.evidence')}: ${(manifest.files ?? []).map((f) => `${f.path_redacted} (${f.dialect}${f.validation === 'unsupported' ? ', unsupported' : ''})`).join(' · ')}`),
+        ),
+        h('div', { 'data-testid': 'profile.top', style: s.card },
+          h('div', { style: { fontWeight: 600, fontSize: '12px', marginBottom: '6px' } }, t('profile.topOps')),
+          h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr 48px 1fr 56px 56px', gap: '4px 8px', fontSize: '11px', color: c.textTertiary } },
+            t('profile.col.type'), t('profile.col.core'), t('profile.col.calls'), t('profile.col.total'), t('profile.col.share'), t('profile.col.row'),
+          ),
+          ...(topOps ?? []).map((op) => h('div', { key: `${op.op_type}-${op.row}`, 'data-testid': `profile.top.${op.op_type}`, style: { display: 'grid', gridTemplateColumns: '2fr 1fr 48px 1fr 56px 56px', gap: '4px 8px', fontSize: '11px', alignItems: 'baseline' } },
+            h('span', {}, op.op_type ?? ''),
+            h('span', { style: s.muted }, op.core_type ?? ''),
+            h('span', { style: s.num }, String(op.calls ?? '')),
+            h('span', { style: s.num }, op.total_ns ?? ''),
+            h('span', { style: s.num }, op.share == null ? '' : `${(op.share * 100).toFixed(1)}%`),
+            h('span', { style: s.muted }, op.row ?? ''),
+          )),
+        ),
+        report
+          ? h('div', { 'data-testid': 'profile.rules', style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+            h('div', { style: { fontWeight: 600, fontSize: '12px' } }, t('profile.rules')),
+            ...(report.rules ?? []).map((rule) => h(ProfileRuleCard, { key: rule.rule_id, rule, expanded: expandedRuleId === rule.rule_id, onToggle: () => onToggleRule(rule.rule_id), t })),
+          )
+          : null,
+      )
+    }
+
+    function ProfileSection({ t }) {
+      const [sessions, setSessions] = useState(null)
+      const [selected, setSelected] = useState('')
+      const [detail, setDetail] = useState(null)
+      const [report, setReport] = useState(null)
+      const [expandedRuleId, setExpandedRuleId] = useState(null)
+      const [error, setError] = useState(null)
+      const [notice, setNotice] = useState(null)
+      const [busy, setBusy] = useState(false)
+
+      const loadSessions = async () => {
+        try {
+          const res = await apiGet('/profile/sessions')
+          setSessions(res.sessions ?? [])
+          return res.sessions ?? []
+        } catch (e) { setError(e); return [] }
+      }
+
+      const openSession = async (sessionId) => {
+        if (!sessionId) { setDetail(null); setReport(null); return }
+        setBusy(true); setError(null)
+        try {
+          const [d, r] = await Promise.all([apiGet(`/profile/sessions/${encodeURIComponent(sessionId)}`), apiGet(`/profile/sessions/${encodeURIComponent(sessionId)}/report`)])
+          setDetail(d); setReport(r)
+        } catch (e) { setError(e); setDetail(null); setReport(null) } finally { setBusy(false) }
+      }
+
+      const uploadFiles = async (fileList) => {
+        setBusy(true); setError(null); setNotice(null)
+        try {
+          const files = []
+          for (const f of Array.from(fileList ?? [])) {
+            const content = await new Promise((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(String(reader.result ?? ''))
+              reader.onerror = () => reject(new Error('read_failed'))
+              reader.readAsText(f)
+            })
+            files.push({ name: f.name, content })
+          }
+          if (files.length === 0) return
+          const res = await apiPost('/profile/imports', { files })
+          setNotice(t('profile.importDone', { n: res.coverage?.accepted ?? 0 }))
+          const list = await loadSessions()
+          const target = list.find((x) => x.session_id === res.session_id) ?? list[0]
+          setSelected(target ? target.session_id : '')
+          await openSession(target ? target.session_id : '')
+        } catch (e) { setError(e) } finally { setBusy(false) }
+      }
+
+      const loadDemo = async () => {
+        setBusy(true); setError(null); setNotice(null)
+        try {
+          const res = await apiPost('/profile/demo')
+          setNotice(t('profile.importDone', { n: res.coverage?.accepted ?? 0 }))
+          const list = await loadSessions()
+          const target = list.find((x) => x.session_id === res.session_id) ?? list[0]
+          setSelected(target ? target.session_id : '')
+          await openSession(target ? target.session_id : '')
+        } catch (e) { setError(e) } finally { setBusy(false) }
+      }
+
+      const removeSession = async () => {
+        if (!selected) return
+        setBusy(true); setError(null)
+        try {
+          await apiDelete(`/profile/sessions/${encodeURIComponent(selected)}`)
+          setNotice(t('profile.deleted'))
+          setSelected(''); setDetail(null); setReport(null)
+          await loadSessions()
+        } catch (e) { setError(e) } finally { setBusy(false) }
+      }
+
+      useEffect(() => { loadSessions() }, [])
+
+      return h(Section, { title: t('profile.title') },
+        h('div', { style: s.muted }, t('profile.desc')),
+        h('div', { 'data-testid': 'profile.import', style: { ...s.row, marginTop: '6px', flexWrap: 'wrap', gap: '6px' } },
+          h('label', { style: { ...s.button, cursor: busy ? 'wait' : 'pointer' } },
+            t('profile.import'),
+            h('input', { type: 'file', accept: '.csv,text/csv', multiple: true, 'data-testid': 'profile.import.input', style: { ...s.input, display: 'none' }, disabled: busy, onChange: (event) => { uploadFiles(event?.target?.files ?? []) } }),
+          ),
+          h('button', { type: 'button', 'data-testid': 'profile.demo', style: s.buttonGhost, disabled: busy, onClick: () => { loadDemo() } }, t('profile.demo')),
+          h('button', { type: 'button', 'data-testid': 'profile.refresh', style: s.buttonGhost, disabled: busy, onClick: () => { loadSessions() } }, t('profile.refresh')),
+        ),
+        h('div', { style: s.muted }, t('profile.importHint')),
+        error ? h(StateMsg, { title: error.code ?? 'ERROR', desc: error.message ?? '', tone: 'error' }) : null,
+        notice ? h(StateMsg, { title: notice, desc: '', tone: 'success' }) : null,
+        sessions === null
+          ? h('div', { 'data-testid': 'profile.loading', style: s.skeleton })
+          : sessions.length === 0
+            ? h(Empty, { title: t('profile.sessionsEmpty'), desc: '' })
+            : h('div', { 'data-testid': 'profile.sessions', style: { ...s.row, flexWrap: 'wrap', gap: '6px' } },
+              h('select', { 'data-testid': 'profile.sessions.select', style: s.select, value: selected, onChange: (event) => { const id = event?.target?.value ?? ''; setSelected(id); openSession(id) } },
+                h('option', { value: '' }, t('profile.select')),
+                ...sessions.map((x) => h('option', { key: x.session_id, value: x.session_id }, `${x.session_id}${x.is_demo ? ' · demo' : ''} · ${x.state}`)),
+              ),
+              selected ? h('button', { type: 'button', 'data-testid': 'profile.delete', style: s.buttonGhost, disabled: busy, onClick: () => { removeSession() } }, t('profile.delete')) : null,
+            ),
+        detail ? h(ProfileSessionView, { detail, report, expandedRuleId, onToggleRule: (ruleId) => { setExpandedRuleId(expandedRuleId === ruleId ? null : ruleId) }, t }) : null,
+      )
+    }
+
     function Panel({ t }) {
       const [state, setState] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -2304,6 +2555,7 @@ window.__ModuleLoader__.load({
                     h(RunsSection, { key: 'runs', state, baselineId, candidateId, setBaselineId, setCandidateId, onImport: () => setImporting(true), onCompare: compare, busy, t }),
                     comparison ? h(CompareView, { key: 'cmp', comparison, baseline, candidate, onExport: exportSummary, onCopy: copySummary, t }) : null,
                     h(InsightSection, { key: 'ins', report, t }),
+                    h(ProfileSection, { key: 'prof', t }),
                   ],
               // t29 v1.5：环境段去噪——底部演示/刷新行与只读提示只在性能调优段出现（环境段保留「刷新全部」）
               segment === 'tune' ? bottomRow : null,
@@ -3314,7 +3566,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale', 'sidebarRightTabs', 'sidebarRight'],
       // 仅供测试使用：无头渲染占用视图组件与判定函数（不参与 DSH 运行时）
-      __test: { chipOccState, deriveEnvOccupancy, envDisplayName, envHostTag, stripUserPrefix, cardNumbering, EnvsSection, EnvBlock, ConfigBar, OccupancyPill, ChipStrip, OccProcRow, EnvMetricSummary, EnvInlineSummary, CardBlock, ChipRow, ImportGuide, AscendIcon, TabTitle, Panel, TuneJobs, SegmentedControl, DeploySegment, DeployStepRow, DeployPlanEditor, validateDeploySpec, buildSpecPayload, deployDefaultFields, DEPLOY_COMPONENTS, DEFAULT_DEPLOY_COMPONENT, EnvConfigModal, EnvConfigRow, validateEnvForm, ContainerServicesBlock, runCardStates, envRunDefaults, DEPLOY_RUN_DEFAULT_IMAGE, DEPLOY_RUN_BIG_IMAGE, zh, en },
+      __test: { ProfileSection, ProfileSessionView, ProfileRuleCard, chipOccState, deriveEnvOccupancy, envDisplayName, envHostTag, stripUserPrefix, cardNumbering, EnvsSection, EnvBlock, ConfigBar, OccupancyPill, ChipStrip, OccProcRow, EnvMetricSummary, EnvInlineSummary, CardBlock, ChipRow, ImportGuide, AscendIcon, TabTitle, Panel, TuneJobs, SegmentedControl, DeploySegment, DeployStepRow, DeployPlanEditor, validateDeploySpec, buildSpecPayload, deployDefaultFields, DEPLOY_COMPONENTS, DEFAULT_DEPLOY_COMPONENT, EnvConfigModal, EnvConfigRow, validateEnvForm, ContainerServicesBlock, runCardStates, envRunDefaults, DEPLOY_RUN_DEFAULT_IMAGE, DEPLOY_RUN_BIG_IMAGE, zh, en },
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ascend-perf: dictionaries')
         ctx.inject(['sidebarRightTabs', 'sidebarRight'], (native) => {
