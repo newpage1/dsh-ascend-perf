@@ -2792,10 +2792,10 @@ test('t126/t128 配方修正：privilegedHosts 显式列入的环境 → --privi
   assert.ok(argv.includes('--device=/dev/davinci6') && argv.includes('--device=/dev/davinci7'))
   assert.ok(argv.includes('--device=/dev/davinci_manager') && argv.includes('--device=/dev/devmm_svm') && argv.includes('--device=/dev/hisi_hdc'), '三个公共 device 齐全')
   // t126：b01 驱动 26.0.rc1 实测——无 --privileged 时 ascend_hal 枚举失败；privileged 下必须用
-  // ASCEND_RT_VISIBLE_DEVICES=逻辑 0..N-1 限制可见设备（否则能枚举全部 8 卡）
+  // ASCEND_RT_VISIBLE_DEVICES=选中卡物理序号限制可见设备（否则能枚举全部 8 卡；t139 实测逻辑序号会打到错误物理卡）
   assert.ok(argv.includes('--privileged'), '驱动 26.0 要求 --privileged')
   assert.ok(argv.includes('--ipc=host'), 'vLLM 共享内存')
-  assert.ok(argv.includes('-e ASCEND_RT_VISIBLE_DEVICES=0,1'), '选中 2 卡 → 逻辑 0,1')
+  assert.ok(argv.includes('-e ASCEND_RT_VISIBLE_DEVICES=6,7'), '选中卡 [6,7] → 物理序号 6,7（t139 勘误：env 取物理 davinci 序号，非逻辑 0..N-1）')
   assert.ok(argv.includes(` -- 'quay.io/ascend/vllm-ascend:v0.23.0'`), "image 前有 '--' 分隔（image 经 quotePosix）")
   assert.ok(argv.includes('-p 127.0.0.1:18433:18433'), '端口只绑 127.0.0.1')
   assert.ok(argv.includes(`-v '/home/z00919396/models':/models:ro`), '模型根目录只读挂载（quotePosix）')
@@ -3870,6 +3870,212 @@ test('t133 T132-11：REST+DOM 级联（demo 导入→session→detail→report�
   assert.equal(del.payload.deleted, true)
   rmSync(dir, { recursive: true, force: true })
 })
+
+
+// ===== t139：容器服务部署后自动采集并导入 vLLM profile =====
+const T139_CSV = readFileSync(join(here, '..', 'fixtures', 'profile', 'op_statistic.csv'), 'utf8')
+const T139_SPEC = {
+  ...T124_SPEC,
+  code: { root: '/home/z00919396/zr/code' },
+  profile: { enabled: true },
+}
+
+test('t139 argv：profile 关闭时不变 / 开启时含 /prof 挂载与 --profiler-config', async () => {
+  const { buildRunArgv } = await import('../deploy-exec.js')
+  const spec = JSON.parse(JSON.stringify({ ...T124_SPEC, image: T124_SPEC.image }))
+  delete spec.profile
+  const plain = buildRunArgv(spec, 'svc-abc123', 'dsh-apf-svc-qwen3-8b-abc123', {})
+  const plainStr = plain.join(' ')
+  assert.ok(!plainStr.includes('/prof'), '未开启 profile 时不得出现 /prof 挂载')
+  assert.ok(!plainStr.includes('--profiler-config'), '未开启 profile 时不得出现 --profiler-config')
+  assert.ok(!plainStr.includes('--enforce-eager'), '未开启 profile 时不得强制 --enforce-eager（argv 不变）')
+  const withProf = buildRunArgv(spec, 'svc-abc123', 'dsh-apf-svc-qwen3-8b-abc123', { profileDir: '/home/z00919396/zr/code/profiles/dsh-apf-svc-qwen3-8b-abc123' })
+  const idx = withProf.indexOf('-v')
+  assert.ok(withProf.includes(`'/home/z00919396/zr/code/profiles/dsh-apf-svc-qwen3-8b-abc123':/prof`), '-v <profileDir>:/prof（quotePosix）')
+  assert.ok(idx > -1)
+  assert.ok(withProf.includes('--profiler-config'))
+  assert.ok(withProf.includes('--enforce-eager'), 'profile 开启 → 强制 --enforce-eager（captain 实测：graph 捕获路径不出 op_statistic.csv）')
+  assert.ok(withProf.includes(`'{"profiler":"torch","torch_profiler_dir":"/prof"}'`), 'profiler JSON 必须 shell quote')
+  // spec 校验：profile 形状
+  const codeIs = (code) => (error) => error?.code === code
+  assert.throws(() => validateRunSpec({ ...T124_SPEC, profile: 123 }, t124GetEnv()), codeIs('INVALID_ARGUMENT'))
+  assert.throws(() => validateRunSpec({ ...T124_SPEC, profile: { enabled: true, dir: 'relative/path' } }, t124GetEnv()), codeIs('INVALID_ARGUMENT'))
+  assert.throws(() => validateRunSpec({ ...T124_SPEC, profile: { enabled: true, extra: 1 } }, t124GetEnv()), codeIs('UNKNOWN_FIELD'))
+  const okSpec = validateRunSpec({ ...T124_SPEC, profile: { enabled: true } }, t124GetEnv())
+  assert.deepEqual(okSpec.spec.profile, { enabled: true, dir: null })
+})
+
+test('t139 全链：mkdir 先于 docker run / healthy 后三步采集 / 导入 mock 收到 CSV+元数据', async () => {
+  const codeIs = (code) => (error) => error?.code === code
+  let clock = 1731600000000
+  const calls = []
+  const captured = []
+  const importerCalls = []
+  let healthy = false
+  let inspectOut = null
+  const exec = async (hostAlias, command) => {
+    calls.push([hostAlias, command])
+    if (command.includes('docker inspect')) return inspectOut
+    if (command.includes('find /prof -name op_statistic.csv')) return { exitCode: 0, stdout: T139_CSV, stderr: '' }
+    if (command.includes("cat '$f'")) return { exitCode: 0, stdout: T139_CSV, stderr: '' }
+    if (command.includes('docker run')) return { exitCode: 0, stdout: 'cid139\n', stderr: '' }
+    if (command.includes('/v1/models')) return healthy ? { exitCode: 0, stdout: 'HEALTHY\n', stderr: '' } : { exitCode: 0, stdout: 'NOT_YET\n', stderr: '' }
+    if (command.includes('/start_profile') || command.includes('/v1/completions') || command.includes('/stop_profile')) { captured.push(command); return { exitCode: 0, stdout: '', stderr: '' } }
+    if (command.includes('op_statistic.csv')) return { exitCode: 0, stdout: T139_CSV, stderr: '' }
+    if (command.includes('mkdir -p -m 700')) return { exitCode: 0, stdout: '', stderr: '' }
+    for (const [needle, out] of t124DefaultScript()) if (command.includes(needle)) return out
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const importer = async (args) => { importerCalls.push(args); return { session_id: 'prof-t139mock00000001', state: 'ready' } }
+  const svc = new DeployRunService({ getEnv: t124GetEnv(), execSsh: exec, isRealExecutionEnabled: () => true, now: () => new Date(clock), profileImporter: importer })
+
+  const preview = await svc.preview(T139_SPEC)
+  const argvStr = preview.data.argv.join(' ')
+  assert.ok(argvStr.includes(`'/home/z00919396/zr/code/profiles/${preview.data.container_name}':/prof`), 'preview argv 含 code.root/profiles/<容器名>:/prof')
+  assert.ok(argvStr.includes('--profiler-config'))
+  assert.equal(preview.data.profile.enabled, true)
+  assert.ok(preview.data.profile.dir.endsWith(preview.data.container_name))
+  assert.ok(!calls.some(([, c]) => c.includes('mkdir -p -m 700')), 'preview 只读，不创建目录')
+  assert.ok(preview.warnings.some((w) => w.includes('profile 采集已开启')), 'preview 给采集计划 warning')
+
+  const started = await svc.start({ ...T139_SPEC, confirmation_token: preview.data.confirmation_token })
+  assert.equal(started.data.instance.profile.state, 'pending')
+  assert.equal(started.data.instance.profile_dir, preview.data.profile.dir)
+  assert.equal(started.data.instance.served_name, 'Qwen3-8B')
+  const mkdirIdx = calls.findIndex(([, c]) => c.includes('mkdir -p -m 700'))
+  const runIdx = calls.findIndex(([, c]) => c.includes('docker run'))
+  assert.ok(mkdirIdx > -1 && runIdx > -1 && mkdirIdx < runIdx, '远端 profile 目录必须在 docker run 之前创建')
+  assert.ok(calls[mkdirIdx][1].includes(`mkdir -p -m 700 '/home/z00919396/zr/code/profiles/${preview.data.container_name}'`), 'mkdir -p -m 700（quotePosix）')
+
+  inspectOut = { exitCode: 0, stdout: `/${preview.data.container_name}|true|0|${preview.data.service_id}\n`, stderr: '' }
+  healthy = true
+  const status = await svc.status(preview.data.service_id)
+  assert.equal(status.data.health, 'healthy')
+  assert.equal(status.data.profile.state, 'imported')
+  assert.equal(status.data.profile.session_id, 'prof-t139mock00000001')
+  // 三步采集顺序
+  const starts = captured.filter((c) => c.includes('/start_profile')).length
+  const comps = captured.filter((c) => c.includes('/v1/completions')).length
+  const stops = captured.filter((c) => c.includes('/stop_profile')).length
+  assert.equal(starts, 1); assert.equal(comps, 2); assert.equal(stops, 1)
+  assert.ok(captured.find((c) => c.includes('/v1/completions') && c.includes('"max_tokens":32')), '两个 max_tokens=32 的补全请求')
+  // 导入 mock 收到 CSV 与元数据
+  assert.equal(importerCalls.length, 1)
+  assert.ok(importerCalls[0].content.includes('LaserAttention'), '导入内容是 op_statistic CSV')
+  assert.equal(importerCalls[0].envId, 'env-b01')
+  assert.equal(importerCalls[0].metadata.model_name, 'Qwen3-8B')
+  assert.equal(importerCalls[0].metadata.service_id, preview.data.service_id)
+  assert.equal(importerCalls[0].metadata.image, T139_SPEC.image)
+  // 采集全程不碰容器生命周期
+  assert.ok(!calls.some(([, c]) => c.includes('docker stop') || c.includes('docker rm -f')), '采集绝不停止/删除容器')
+  // 不会重复采集
+  await svc.status(preview.data.service_id)
+  assert.equal(calls.filter(([, c]) => c.includes('/start_profile')).length, 1, 'state 机保证只采集一次')
+  // 停掉第一个实例释放占位（t126②：同卡/同端口不能并存两个活跃实例）
+  await svc.stop(preview.data.service_id)
+  // 未开启 profile：skipped 且零采集
+  const preview2 = await svc.preview(T124_SPEC)
+  const started2 = await svc.start({ ...T124_SPEC, confirmation_token: preview2.data.confirmation_token })
+  assert.equal(started2.data.instance.profile.state, 'skipped')
+  assert.ok(!started2.data.instance.profile_dir)
+  inspectOut = { exitCode: 0, stdout: `/${preview2.data.container_name}|true|0|${preview2.data.service_id}\n`, stderr: '' }
+  const status2 = await svc.status(preview2.data.service_id)
+  assert.equal(status2.data.health, 'healthy')
+  assert.equal(status2.data.profile.state, 'skipped')
+  assert.equal(calls.filter(([, c]) => c.includes('/start_profile')).length, 1, 'skipped 实例零采集')
+  await assert.rejects(() => svc.preview({ ...T139_SPEC, profile: { enabled: true, dir: 'nope' } }), codeIs('INVALID_ARGUMENT'))
+})
+
+test('t139 失败路径：采集失败服务仍 healthy，profile.state=failed + warning，不重试不回滚', async () => {
+  let clock = 1731600000000
+  const calls = []
+  let inspectOut = null
+  let profileFails = true
+  const importer = async () => { throw new Error('importer should not run') }
+  const exec = async (hostAlias, command) => {
+    calls.push(command)
+    if (command.includes('docker inspect')) return inspectOut
+    if (command.includes('docker run')) return { exitCode: 0, stdout: 'cid139b\n', stderr: '' }
+    if (command.includes('/v1/models')) return { exitCode: 0, stdout: 'HEALTHY\n', stderr: '' }
+    if (command.includes('/start_profile')) return profileFails ? { exitCode: 7, stdout: '', stderr: 'curl: (7) Failed to connect' } : { exitCode: 0, stdout: '', stderr: '' }
+    for (const [needle, out] of t124DefaultScript()) if (command.includes(needle)) return out
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const svc = new DeployRunService({ getEnv: t124GetEnv(), execSsh: exec, isRealExecutionEnabled: () => true, now: () => new Date(clock), profileImporter: importer })
+  const preview = await svc.preview(T139_SPEC)
+  await svc.start({ ...T139_SPEC, confirmation_token: preview.data.confirmation_token })
+  inspectOut = { exitCode: 0, stdout: `/${preview.data.container_name}|true|0|${preview.data.service_id}\n`, stderr: '' }
+  const status = await svc.status(preview.data.service_id)
+  assert.equal(status.data.health, 'healthy', '采集失败绝不影响服务健康态')
+  assert.equal(status.data.profile.state, 'failed')
+  assert.ok(String(status.data.profile.error ?? '').includes('/start_profile'))
+  assert.ok((status.warnings ?? []).some((w) => w.includes('profile 采集失败')), 'status warning 如实给出失败原因')
+  assert.ok(!calls.some((c) => c.includes('docker stop') || c.includes('docker rm -f')), '失败不回滚/不杀服务')
+  const listed = await svc.listInstances()
+  assert.equal(listed.data.instances.length, 1, '实例保留在列表')
+  await svc.status(preview.data.service_id)
+  assert.equal(calls.filter((c) => c.includes('/start_profile')).length, 1, 'failed 终态不重试')
+})
+
+test('t139 默认导入器：走 ProfileService 落盘（DSH_ASCEND_PERF_DATA_DIR 覆盖 dataDir）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 't139-importer-'))
+  const prevEnv = process.env.DSH_ASCEND_PERF_DATA_DIR
+  process.env.DSH_ASCEND_PERF_DATA_DIR = dir
+  let inspectOut = null
+  const exec = async (hostAlias, command) => {
+    if (command.includes('docker inspect')) return inspectOut
+    if (command.includes('find /prof -name op_statistic.csv')) return { exitCode: 0, stdout: T139_CSV, stderr: '' }
+    if (command.includes('docker run')) return { exitCode: 0, stdout: 'cid139c\n', stderr: '' }
+    if (command.includes('/v1/models')) return { exitCode: 0, stdout: 'HEALTHY\n', stderr: '' }
+    if (command.includes('op_statistic.csv')) return { exitCode: 0, stdout: T139_CSV, stderr: '' }
+    for (const [needle, out] of t124DefaultScript()) if (command.includes(needle)) return out
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  try {
+    const svc = new DeployRunService({ getEnv: t124GetEnv(), execSsh: exec, isRealExecutionEnabled: () => true })
+    const preview = await svc.preview(T139_SPEC)
+    await svc.start({ ...T139_SPEC, confirmation_token: preview.data.confirmation_token })
+    inspectOut = { exitCode: 0, stdout: `/${preview.data.container_name}|true|0|${preview.data.service_id}\n`, stderr: '' }
+    const status = await svc.status(preview.data.service_id)
+    assert.equal(status.data.profile.state, 'imported')
+    const sid = status.data.profile.session_id
+    assert.ok(/^prof-[a-z0-9]{16}$/.test(sid), `session_id 形状：${sid}`)
+    const manifest = JSON.parse(readFileSync(join(dir, 'profile-v1', 'real', sid, 'manifest.json'), 'utf8'))
+    assert.equal(manifest.source.env_id, 'env-b01', 'env 关联入 manifest.source')
+    assert.equal(manifest.model.name, 'Qwen3-8B', 'model_name 入 manifest.model')
+    assert.equal(manifest.state, 'ready')
+    assert.equal(manifest.files.length, 1)
+  } finally {
+    if (prevEnv === undefined) delete process.env.DSH_ASCEND_PERF_DATA_DIR
+    else process.env.DSH_ASCEND_PERF_DATA_DIR = prevEnv
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('t139 UI：复选框默认关 + 实例行 profile 状态文案', async () => {
+  const mod = loadClientModule()
+  const t = makeT(mod.__test.zh)
+  const state = {
+    envs: [{ id: 'env-b01', name: 'b01', mode: 'ssh', hostAlias: 'b01', enabled: true, snapshot: { npu: { cards: [{ card_id: 0, chips: [{ hbm_usage_rate_pct: 3, aicore_pct: 1 }] }] } } }],
+    deploy_run: { real_execution_enabled: true },
+  }
+  const block = renderNode(mod.__test.ContainerServicesBlock({ state, t }))
+  const checkbox = findTestId(block, 'deploy.run.profile')
+  assert.ok(checkbox, '高级选项里有 profile 复选框')
+  assert.equal(checkbox.props.checked, false, '默认关闭')
+  assert.ok(textOf(block).includes('部署后自动采集 profile（vLLM）'))
+  const state2 = { ...state, envs: [] }
+  const block2 = renderNode(mod.__test.ContainerServicesBlock({ state: state2, t }))
+  const check2 = findTestId(block2, 'deploy.run.profile')
+  assert.ok(!check2 || check2.props.checked === false, '无 ssh 环境时不渲染启用态')
+  // 实例行状态渲染：直接喂 instances 需要 loadInstances——改用 doState 合并路径的替代验证：
+  // 渲染函数是闭包，无法外部注入 instances；改为断言 profile 文案键存在于字典且 t() 可插值
+  assert.ok(t('deploy.run.profileImported', { id: 'prof-abc123' }).includes('prof-abc123'))
+  assert.ok(t('deploy.run.profileFailed', { msg: 'boom' }).includes('boom'))
+  assert.ok(mod.__test.zh['deploy.run.profilePending'])
+  assert.ok(mod.__test.en['deploy.run.profileSkipped'])
+})
+
 
 await Promise.all(pending)
 const summary = `${passed} passed, ${failures.length} failed`

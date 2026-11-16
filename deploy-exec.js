@@ -6,7 +6,7 @@
 // - t126 b01 实测（驱动 26.0.rc1）：无 --privileged 时 ascend_hal 枚举失败
 //   （"Can't get ascend_hal device count" → vllm 引擎初始化 std::logic_error 退出）；
 //   加 --privileged 后若不限制可见设备，容器能看到全部 8 卡（COUNT=8，隔离失效）。
-//   因此：--privileged --ipc=host + ASCEND_RT_VISIBLE_DEVICES=逻辑 0..N-1
+//   因此：--privileged --ipc=host + ASCEND_RT_VISIBLE_DEVICES=选中卡物理序号（t139 勘误：env 是物理 davinci 序号）
 //   （只挂选中节点 + 逻辑重映射，实测单卡 COUNT=1、双卡 COUNT=2，卡 6 冒烟+1B 服务全通）。
 // - 双门 fail-closed：真实执行默认关闭（envs.json 可选 "deploy": {"allowRealExecution": true}）
 //   + preview 返回的 confirmation_token（10 分钟 TTL，绑定 spec 摘要）。缺任一门即拒绝。
@@ -15,23 +15,40 @@
 //   构造；测试注入 mock），本模块自身不 spawn、不连远端。
 // - 预检：环境存在且启用且为 ssh 模式；逐卡 npu-smi usages 实测空闲（HBM<10% 且 AICore<5%）；
 //   端口 ss -ltn 未监听；docker image inspect 存在；模型目录 test -d。
+// - t139：可选 vLLM profiler 采集——spec.profile.enabled 时挂 -v <远端目录>:/prof +
+//   --profiler-config '{"profiler":"torch","torch_profiler_dir":"/prof"}'；服务 healthy 后自动
+//   /start_profile → 2×/v1/completions(max_tokens 32) → /stop_profile，读回 op_statistic.csv
+//   导入 ProfileService（kernel_details ~20MB 暂不导入）。采集失败只记 profile.state='failed'
+//   + warning，绝不回滚/杀掉已启动的服务。
 
 import { createHash, randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { TuneApiError, tuneError } from './tune-exec.js'
+// t139：采集到的 op_statistic.csv 走现有 ProfileService 导入（本文件不改 profile.js 的规则）
+import { createProfileService } from './profile.js'
 
 export const DEPLOY_RUN_SCHEMA = 'dsh-ascend-perf/deploy-run-v1'
 export const RUN_CONTAINER_PREFIX = 'dsh-apf-svc-'
 export const RUN_CONTAINER_LABEL = 'dsh-ascend-perf.service'
 export const DEFAULT_RUN_IMAGE = 'quay.io/ascend/vllm-ascend:v0.23.0'
 export const CONFIRMATION_TTL_MS = 10 * 60 * 1000
+// t139：vLLM torch profiler 输出挂载点与启动参数（c01 实测定稿，见任务书）
+export const PROFILE_MOUNT = '/prof'
+const PROFILER_CONFIG_JSON = '{"profiler":"torch","torch_profiler_dir":"/prof"}'
+// stop_profile 后 ascend_pt 导出异步落盘（trace.gz→rank0 目录→CSV 可达数分钟）：单次 status 有界等待 4×5s，累计 600s 超时。
+const PROFILER_EXPORT_POLL_LOOPS = 4
+const PROFILER_EXPORT_POLL_S = 5
+const PROFILER_EXPORT_TIMEOUT_MS = 600000
 export const RUN_ERROR_CODES = [
   'INVALID_ARGUMENT', 'UNKNOWN_FIELD', 'ENV_UNKNOWN', 'ENV_DISABLED', 'ENV_MODE_UNSUPPORTED',
   'SNAPSHOT_MISSING', 'CHIP_BUSY', 'PORT_IN_USE', 'IMAGE_NOT_FOUND', 'MODEL_DIR_MISSING',
   'SSH_UNAVAILABLE', 'REAL_EXECUTION_DISABLED', 'INVALID_CONFIRMATION', 'INSTANCE_UNKNOWN',
-  'FORBIDDEN', 'RESERVATION_CONFLICT', 'DOCKER_ERROR', 'INTERNAL_ERROR',
+  'FORBIDDEN', 'RESERVATION_CONFLICT', 'DOCKER_ERROR', 'INTERNAL_ERROR', 'PROFILE_CAPTURE_FAILED',
 ]
 
-const SPEC_KEYS = ['env_id', 'image', 'model', 'code', 'params', 'cards']
+const SPEC_KEYS = ['env_id', 'image', 'model', 'code', 'params', 'cards', 'profile']
+const PROFILE_KEYS = ['enabled', 'dir']
 const MODEL_KEYS = ['root', 'path']
 const PARAM_KEYS = ['port', 'tensor_parallel', 'max_model_len', 'health_timeout_s', 'max_num_seqs', 'max_num_batched_tokens', 'gpu_memory_utilization', 'enable_prefix_caching', 'enforce_eager']
 const CODE_COMPONENTS = ['vllm', 'vllm-ascend', 'lmcache', 'lmcache-ascend', 'mooncake']
@@ -135,6 +152,17 @@ export function validateRunSpec(raw, getEnv) {
   const enforceEager = params.enforce_eager
   if (enforceEager !== undefined && typeof enforceEager !== 'boolean') fail('INVALID_ARGUMENT', 'params.enforce_eager 必须是布尔值')
 
+  // t139：可选 profile 采集——{enabled:boolean, dir?:远端绝对路径}
+  let profile = null
+  if (raw.profile !== undefined && raw.profile !== null) {
+    if (!isPlainObject(raw.profile)) fail('INVALID_ARGUMENT', 'profile 必须是对象 {enabled, dir?}')
+    rejectUnknown(raw.profile, PROFILE_KEYS, 'profile')
+    const enabled = raw.profile.enabled === true
+    let dir = typeof raw.profile.dir === 'string' ? raw.profile.dir.trim().replace(/\/+$/, '') : ''
+    if (dir && (!ABS_PATH_RE.test(dir) || dir.includes('..'))) fail('INVALID_ARGUMENT', 'profile.dir 必须是远端绝对路径且不含 ..', { dir })
+    profile = { enabled, dir: dir || null }
+  }
+
   if (!Array.isArray(raw.cards) || raw.cards.length === 0) fail('INVALID_ARGUMENT', 'cards 必须是非空数组')
   const cards = []
   for (const card of raw.cards) {
@@ -158,6 +186,7 @@ export function validateRunSpec(raw, getEnv) {
       code: codeComponents.length ? { root: codeRoot || null, ...(build ? { build: true } : {}), components: codeComponents } : (codeRoot ? { root: codeRoot } : null),
       params: { port, tensor_parallel: tensorParallel, max_model_len: maxModelLen, health_timeout_s: healthTimeoutS, ...(maxNumSeqs !== undefined ? { max_num_seqs: maxNumSeqs } : {}), ...(maxNumBatched !== undefined ? { max_num_batched_tokens: maxNumBatched } : {}), ...(gpuMemory !== undefined ? { gpu_memory_utilization: gpuMemory } : {}), ...(prefixCache !== undefined ? { enable_prefix_caching: prefixCache } : {}), ...(enforceEager !== undefined ? { enforce_eager: enforceEager } : {}) },
       cards,
+      ...(profile ? { profile } : {}),
     },
   }
 }
@@ -193,15 +222,18 @@ export function buildBuildScript(spec) {
   return lines.join('\n')
 }
 
-export function buildRunArgv(spec, svcId, containerName, { privileged = false } = {}) {
+export function buildRunArgv(spec, svcId, containerName, { privileged = false, profileDir = null } = {}) {
   // t128②：配方按环境 opt-in（envs.json 顶层 deploy.privilegedHosts，按 hostAlias 或 env id 匹配）：
   // - privileged=true（b01 等驱动 ≥26.0.rc1 的机器）：--privileged（ascend_hal 枚举必需，实测
-  //   无特权时 device_count=0 ×10 变体）+ --ipc=host + ASCEND_RT_VISIBLE_DEVICES=逻辑 0..N-1
+  //   无特权时 device_count=0 ×10 变体）+ --ipc=host + ASCEND_RT_VISIBLE_DEVICES=选中卡物理序号
   //   （privileged 下不限制会枚举全部 8 卡=隔离失效；实测 =0 时 COUNT=1、=0,1 时 COUNT=2，
   //   与只挂的 --device 节点一一对应）。
   // - privileged=false（默认，安全回退）：不提权、不设 env——旧驱动（25.x，如 c01 25.5.1）下
   //   只挂选中 --device 节点即完成逻辑重映射，最小权限配方。
-  const visibleDevices = spec.cards.map((_card, index) => index).join(',')
+  // t139 勘误：privileged 下 ASCEND_RT_VISIBLE_DEVICES 取的是**物理卡号**（davinci0..N），
+  // 不是逻辑序号——c01 实测 cards=[4]+env=0 会打到物理卡 0（他人满载卡 → NPU OOM 507033）；
+  // env=4+只挂 davinci4 才正确隔离。故直接用选中卡的物理序号。
+  const visibleDevices = spec.cards.join(',')
   const argv = ['docker', 'run', '-d',
     ...(privileged ? ['--privileged', '--ipc=host'] : []),
     '--name', quotePosix(containerName),
@@ -213,6 +245,8 @@ export function buildRunArgv(spec, svcId, containerName, { privileged = false } 
     '-v', '/etc/ascend_install.info:/etc/ascend_install.info:ro',
     '-v', `${quotePosix(spec.model.root)}:/models:ro`,
     ...(spec.code?.root ? ['-v', `${quotePosix(spec.code.root)}:/code:ro`] : []),
+    // t139：profile 输出目录（可写挂载；启动前已在远端 mkdir -p -m 700）
+    ...(profileDir ? ['-v', `${quotePosix(profileDir)}:${PROFILE_MOUNT}`] : []),
     '-p', `127.0.0.1:${spec.params.port}:${spec.params.port}`,
     ...(privileged ? ['-e', `ASCEND_RT_VISIBLE_DEVICES=${visibleDevices}`] : []),
     // t126④：'--' 分隔符保证 image 即使以 '-' 开头也不会被 docker 当选项（校验层已拒绝，双保险）。
@@ -228,7 +262,12 @@ export function buildRunArgv(spec, svcId, containerName, { privileged = false } 
     ...(spec.params.max_num_batched_tokens !== undefined ? ['--max-num-batched-tokens', String(spec.params.max_num_batched_tokens)] : []),
     ...(spec.params.gpu_memory_utilization !== undefined ? ['--gpu-memory-utilization', String(spec.params.gpu_memory_utilization)] : []),
     ...(spec.params.enable_prefix_caching === true ? ['--enable-prefix-caching'] : spec.params.enable_prefix_caching === false ? ['--no-enable-prefix-caching'] : []),
-    ...(spec.params.enforce_eager === true ? ['--enforce-eager'] : []))
+    // t139（captain 实测勘误）：profile 采集**必须 --enforce-eager**——ACL/CUDA graph 捕获路径只产
+    // torch trace.json.gz，不出 Ascend op_statistic.csv（c01 3B 三轮复现：rank0_* 目录空 600s+）。
+    // 开启 profile 时强制 eager（用户显式传 false 也覆盖，preview/文档已注明取舍）。
+    ...((spec.params.enforce_eager === true || profileDir) ? ['--enforce-eager'] : []),
+    // t139：vLLM torch profiler（服务 healthy 后由本插件触发 /start_profile→2 请求→/stop_profile）
+    ...(profileDir ? ['--profiler-config', quotePosix(PROFILER_CONFIG_JSON)] : []))
   return argv
 }
 
@@ -272,7 +311,7 @@ function runErrorPayload(error) {
 }
 
 export class DeployRunService {
-  constructor({ getEnv, execSsh, isRealExecutionEnabled = () => false, now = () => new Date(), listEnvs = () => [], getDeployConfig = null }) {
+  constructor({ getEnv, execSsh, isRealExecutionEnabled = () => false, now = () => new Date(), listEnvs = () => [], getDeployConfig = null, profileImporter = null }) {
     if (typeof execSsh !== 'function') throw new Error('DeployRunService 需要 execSsh 注入')
     this._getEnv = getEnv
     this._execSsh = execSsh
@@ -287,6 +326,35 @@ export class DeployRunService {
     this._instances = new Map()
     /** @type {Map<string, {env_id:string,host:string,cards:number[],port:number,container_name:string}>} svc_id -> reservation（t126②：docker run 前原子占位） */
     this._reservations = new Map()
+    // t139：profile 导入器注入（测试 mock 用）；缺省懒构造 ProfileService——
+    // dataDir 与 index.js normalizeConfig 默认一致（可用 DSH_ASCEND_PERF_DATA_DIR 覆盖），
+    // 面板的 /profile/sessions 每次读盘 index.json，能立即看到新导入的 session。
+    this._profileImporterFn = profileImporter
+    this._profileService = null
+  }
+
+  // t139：默认导入器——把采集到的 op_statistic.csv 交给现有 ProfileService（不改其规则）
+  _defaultProfileImporter({ content, envId, metadata }) {
+    if (!this._profileService) {
+      this._profileService = createProfileService({ dataDir: process.env.DSH_ASCEND_PERF_DATA_DIR ?? join(homedir(), '.local/share', 'dsh-ascend-perf') })
+    }
+    return this._profileService.importFiles({ files: [{ name: 'op_statistic.csv', content }], mode: 'upload', envId, metadata, policy: 'strict' })
+  }
+
+  // t139：profile 输出目录解析——显式 spec.profile.dir > code.root/profiles > $HOME/.dsh-ascend-perf-profiles；
+  // 返回 `${base}/${containerName}`（base 末尾斜杠已归一）。
+  async _resolveProfileDir(spec, env, containerName) {
+    let base = spec.profile?.dir || null
+    if (!base && spec.code?.root) base = `${spec.code.root.replace(/\/+$/, '')}/profiles`
+    if (!base) {
+      const probe = await this._ssh(env, 'printf %s "$HOME"', 10000)
+      const home = String(probe.stdout ?? '').trim()
+      if (probe.exitCode !== 0 || !home || !home.startsWith('/')) {
+        fail('SSH_UNAVAILABLE', `无法解析远端 HOME（用于默认 profile 目录，exit ${probe.exitCode}）：${(probe.stderr ?? '').slice(0, 200)}`)
+      }
+      base = `${home}/.dsh-ascend-perf-profiles`
+    }
+    return `${base}/${containerName}`
   }
 
   // t128②：特权配方判定——仅当 envs.json 顶层 deploy.privilegedHosts 显式列出该环境的
@@ -380,7 +448,10 @@ export class DeployRunService {
     const pre = await this._precheck(spec, env)
     // t128②：配方按环境 opt-in；preview 如实展示将使用的配方与风险提示（非特权回退 + 特权例外）。
     const privileged = this._privilegedFor(env)
-    const argv = buildRunArgv(spec, svcId, containerName, { privileged })
+    // t139：preview 如实展示 profile 挂载与采集计划（只读探测远端目录基址，不创建）
+    let profileDir = null
+    if (spec.profile?.enabled) profileDir = await this._resolveProfileDir(spec, env, containerName)
+    const argv = buildRunArgv(spec, svcId, containerName, { privileged, profileDir })
     const token = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '').slice(0, 8)
     const expiresAt = this._now() + CONFIRMATION_TTL_MS
     this._confirmations.set(token, { token, digest: specDigest(spec, containerName), expires_at: expiresAt, spec, container_name: containerName, svc_id: svcId })
@@ -391,9 +462,12 @@ export class DeployRunService {
       warnings.push('代码分支已记录到运行规格，但未开启构建；实际启动仍使用镜像内代码')
     }
     if (privileged) {
-      warnings.push('特权配方（该环境已列入 deploy.privilegedHosts，适用驱动 ≥26.0.rc1，如 b01）：--privileged 放大容器权限，已用 ASCEND_RT_VISIBLE_DEVICES=逻辑序号 + 只挂选中 --device 限制可见卡；请仅对可信镜像使用')
+      warnings.push('特权配方（该环境已列入 deploy.privilegedHosts，适用驱动 ≥26.0.rc1，如 b01）：--privileged 放大容器权限，已用 ASCEND_RT_VISIBLE_DEVICES=选中卡物理序号 + 只挂选中 --device 限制可见卡；请仅对可信镜像使用')
     } else {
       warnings.push('基线配方（非特权，默认安全回退）：适用于 25.x 驱动（如 c01 25.5.1）；若该机驱动 ≥26.0（如 b01 26.0.rc1）会因 ascend_hal 枚举失败无法启动——需在 envs.json 顶层 deploy.privilegedHosts 显式列入该环境')
+    }
+    if (spec.profile?.enabled) {
+      warnings.push(`profile 采集已开启：强制 --enforce-eager（graph 捕获路径只出 torch trace、不出 Ascend op_statistic——c01 3B 实测）；服务 healthy 后自动 /start_profile → 2 个 max_tokens=32 请求 → /stop_profile，轮询等待 msprof 异步导出后把 op_statistic.csv 导入性能调优段（kernel_details 约 20MB 暂不导入）；采集失败不影响已启动的服务`)
     }
     return runEnvelope('preview', {
       data: {
@@ -403,6 +477,7 @@ export class DeployRunService {
         cards: pre.cards,
         code_components: spec.code?.components ?? [],
         argv,
+        profile: spec.profile?.enabled ? { enabled: true, dir: profileDir } : null,
         recipe: privileged ? 'privileged-isolated' : 'baseline-sandboxed',
         confirmation_token: token,
         confirmation_expires_at: new Date(expiresAt).toISOString(),
@@ -451,11 +526,20 @@ export class DeployRunService {
     this._reservations.set(probe.svc_id, { env_id: env.id, host: env.hostAlias, cards: [...spec.cards], port: spec.params.port, container_name: probe.container_name })
     let containerId = null
     let precheckCards = null
+    let profileDir = null
     try {
       const pre = await this._precheck(spec, env) // 门后重跑预检：预览到 start 之间卡可能被占
       precheckCards = pre.cards
       const privileged = this._privilegedFor(env)
-    const argv = buildRunArgv(spec, probe.svc_id, probe.container_name, { privileged })
+      // t139：profile.enabled 时启动前创建远端输出目录（0700，失败即拒启动——挂载点必须存在且属主正确）
+      if (spec.profile?.enabled) {
+        profileDir = await this._resolveProfileDir(spec, env, probe.container_name)
+        const mk = await this._ssh(env, `mkdir -p -m 700 ${quotePosix(profileDir)}`, 15000)
+        if (mk.exitCode !== 0) {
+          fail('SSH_UNAVAILABLE', `远端 profile 目录创建失败（exit ${mk.exitCode}）：${(mk.stderr ?? '').slice(0, 200)}`, { dir: profileDir })
+        }
+      }
+    const argv = buildRunArgv(spec, probe.svc_id, probe.container_name, { privileged, profileDir })
       const run = await this._ssh(env, argv.join(' '), 60000)
       containerId = String(run.stdout ?? '').trim().split('\n')[0] || null
       if (run.exitCode !== 0) {
@@ -480,6 +564,10 @@ export class DeployRunService {
       started_at: new Date(this._now()).toISOString(),
       health_timeout_s: spec.params.health_timeout_s,
       origin,
+      // t139：profile 采集状态机 pending→collecting→imported|failed；skipped=未开启
+      profile: { state: spec.profile?.enabled ? 'pending' : 'skipped' },
+      profile_dir: profileDir,
+      served_name: spec.model.path.split('/').pop(),
     }
     this._instances.set(instance.service_id, instance)
     return runEnvelope('start', {
@@ -604,6 +692,30 @@ export class DeployRunService {
       const curl = await this._execSsh(hostAlias, `curl -sf --max-time 5 http://127.0.0.1:${instance.port}/v1/models >/dev/null 2>&1 && echo HEALTHY || echo NOT_YET`, 15000)
       if (String(curl.stdout ?? '').includes('HEALTHY')) {
         health = 'healthy'
+        // t139：首次 healthy 触发一次采集（start/2×completions/stop），此后每次 status 有界等待导出；
+        // 失败/超时只记录，绝不碰服务。状态机保证三步采集只跑一次。
+        if (instance.profile?.state === 'pending') {
+          try {
+            await this._beginProfileCapture(instance)
+          } catch (error) {
+            instance.profile = { state: 'failed', error: String(error?.message ?? error).slice(0, 300), dir: instance.profile_dir }
+          }
+        }
+        if (instance.profile?.state === 'collecting') {
+          const startedAt = Number(instance.profile.started_at ?? 0)
+          const elapsed = startedAt > 0 ? this._now() - startedAt : Infinity
+          const content = elapsed < PROFILER_EXPORT_TIMEOUT_MS ? await this._awaitProfileExport(instance) : null
+          if (content) {
+            try {
+              await this._importProfile(instance, content)
+            } catch (error) {
+              instance.profile = { state: 'failed', error: String(error?.message ?? error).slice(0, 300), dir: instance.profile_dir }
+            }
+          } else if (elapsed >= PROFILER_EXPORT_TIMEOUT_MS) {
+            instance.profile = { state: 'failed', error: `msprof 导出超时（${Math.round(PROFILER_EXPORT_TIMEOUT_MS / 1000)}s 内未见 rank0*/ASCEND_PROFILER_OUTPUT/op_statistic.csv）`, dir: instance.profile_dir }
+          }
+          // 仍无文件且未超时 → 保持 collecting，下一次 status 继续等（服务不受影响）。
+        }
       } else if (this._now() - Date.parse(instance.started_at) > instance.health_timeout_s * 1000) {
         // 健康超时：清掉自有容器（前缀+label 守卫已过），诚实报 error
         await this._execSsh(hostAlias, `docker rm -f ${quotePosix(instance.container_name)} >/dev/null 2>&1 || true`, 30000)
@@ -615,7 +727,64 @@ export class DeployRunService {
       this._instances.delete(instance.service_id)
       this._releaseReservation(instance)
     }
-    return runEnvelope('status', { data: { ...instance, health, container: info, cleanup } })
+    const statusWarnings = []
+    if (instance.profile?.state === 'failed') {
+      statusWarnings.push(`profile 采集失败（已启动的服务不受影响，可在「性能调优」段手动导入）：${instance.profile.error ?? '未知错误'}`)
+    }
+    return runEnvelope('status', { data: { ...instance, health, container: info, cleanup }, warnings: statusWarnings })
+  }
+
+  // t139：一次性 profile 采集——/start_profile → 2×/v1/completions(max_tokens 32) → /stop_profile
+  // → 读回 rank0*/ASCEND_PROFILER_OUTPUT/op_statistic.csv → 交给 ProfileService 导入。
+  // 任何一步失败抛 PROFILE_CAPTURE_FAILED（由调用方置 failed；绝不停止/回滚服务）。
+  // t139：profile 采集是**跨多次 status 调用的可恢复状态机**——msprof 导出在 stop_profile 后
+  // 异步进行且可达数分钟（c01 3B 实测：trace.gz 先落、rank0_* 目录次之、CSV 最后，全程可超 120s），
+  // 单次 ssh 长轮询既阻塞 status 又容易在导出完成前被判失败。改为：
+  //   pending →（status 触发一次 start/2×completions/stop）→ collecting(started_at) →
+  //   （每次 status 有界等待 PROFILER_EXPORT_POLL_LOOPS×POLL_S）→ imported / failed(累计超时 PROFILER_EXPORT_TIMEOUT_MS)。
+  async _beginProfileCapture(instance) {
+    const port = instance.port
+    const model = instance.served_name ?? String(instance.model ?? '').split('/').pop()
+    const post = async (path, body = null) => {
+      const json = body === null ? '' : ` -H 'Content-Type: application/json' -d ${quotePosix(JSON.stringify(body))}`
+      const probe = await this._execSsh(instance.host_alias, `curl -sf -X POST --max-time 30 http://127.0.0.1:${port}${path}${json} >/dev/null 2>&1`, 45000)
+      if (probe.exitCode !== 0) fail('PROFILE_CAPTURE_FAILED', `curl ${path} 失败（exit ${probe.exitCode}）：profile 采集中断`, { path })
+      return probe
+    }
+    await post('/start_profile')
+    try {
+      await post('/v1/completions', { model, prompt: 'dsh-ascend-perf profile capture request 1', max_tokens: 32 })
+      await post('/v1/completions', { model, prompt: 'dsh-ascend-perf profile capture request 2', max_tokens: 32 })
+    } finally {
+      try { await post('/stop_profile') } catch { /* 采集已失败，停止尽力而为，不掩盖原始错误 */ }
+    }
+    instance.profile = { state: 'collecting', dir: instance.profile_dir, started_at: this._now() }
+  }
+
+  // 单次 status 内的有界等待：找 CSV（最多 4×5s）；返回 CSV 内容或 null（仍无 → 下次 status 继续，直到超时）。
+  async _awaitProfileExport(instance) {
+    const dir = instance.profile_dir
+    // t139b：rank0_* 由容器内 root 创建（目录 700，宿主用户不可读），不能用宿主 ls/cat 判断。
+    // 用同一服务镜像起一个只读一次性容器，在容器内 find+cat；镜像已在目标机（服务由它启动）。
+    const read = await this._execSsh(instance.host_alias, `f=""; for i in $(seq 1 ${PROFILER_EXPORT_POLL_LOOPS}); do f=$(docker run --rm -v ${quotePosix(dir)}:/prof ${quotePosix(instance.image)} bash -lc "find /prof -name op_statistic.csv -print -quit" 2>/dev/null | head -1); if [ -n "$f" ]; then break; fi; sleep ${PROFILER_EXPORT_POLL_S}; done; if [ -n "$f" ]; then docker run --rm -v ${quotePosix(dir)}:/prof ${quotePosix(instance.image)} bash -lc "cat '$f'" 2>/dev/null; fi`, 60000)
+    const content = String(read.stdout ?? '')
+    return read.exitCode === 0 && content.trim() ? content : null
+  }
+
+  async _importProfile(instance, content) {
+    const model = instance.served_name ?? String(instance.model ?? '').split('/').pop()
+    const importer = this._profileImporterFn ?? ((args) => this._defaultProfileImporter(args))
+    const imported = await importer({
+      content,
+      envId: instance.env_id,
+      // manifest 持久化 model_name/env_id；image/service_id 一并传入（profile.js 的 metadata
+      // 只持久化四键，其余记录在运行实例的 profile 字段里供 UI 展示）
+      metadata: { model_name: model, model_revision: instance.image ?? null, env: instance.env_id, image: instance.image, service_id: instance.service_id },
+    })
+    if (!imported?.session_id) {
+      fail('PROFILE_CAPTURE_FAILED', `profile 导入未返回 session_id：${JSON.stringify(imported ?? null).slice(0, 200)}`)
+    }
+    instance.profile = { state: 'imported', session_id: imported.session_id, dir: instance.profile_dir }
   }
 
   // t126②：终态/停止后释放占位（按 service_id 或容器名匹配）。
@@ -707,6 +876,7 @@ export function createDeployRunTools(service) {
         },
         code: { type: 'object', description: '代码目录与代码分支配置', properties: { root: { type: 'string' }, components: { type: 'array', items: { type: 'object', properties: { component: { type: 'string', enum: CODE_COMPONENTS }, ref: { type: 'string' }, commit: { type: 'string' } }, required: ['component', 'ref'] } } } },
         cards: { type: 'array', items: { type: 'number' }, description: 'NPU 卡号列表（0-63，唯一；启动前逐卡实测空闲）' },
+        profile: { type: 'object', description: '可选：部署后自动采集 vLLM profile 并导入性能调优段', properties: { enabled: { type: 'boolean', description: '默认 false；开启后挂载 /prof + --profiler-config，healthy 后自动采集' }, dir: { type: 'string', description: '远端 profile 输出根目录（默认 <code.root>/profiles 或 $HOME/.dsh-ascend-perf-profiles）' } } },
         instance: { type: 'string', description: '容器服务 id 或容器名（status/stop/logs 用）' },
         confirmation_token: { type: 'string', description: 'preview 返回的确认令牌（start 用，10 分钟有效）' },
         tail: { type: 'number', description: 'logs 尾部行数（默认 100，最大 1000）' },
