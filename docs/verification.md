@@ -900,7 +900,7 @@ node test/run-tests.mjs → 70 passed, 0 failed
 
 **发现 4（enforce-eager 为 CSV 落盘前置条件，captain 复证）**：非 eager（ACL graph 捕获）路径下 `/start_profile→/stop_profile` 只产 `trace.json.gz`（~1.8MB）与**空的** `rank0_*_ascend_pt/` 目录——CSV 在容器存活 600s 轮询与 `docker stop -t 60` 后均不出现（三轮复现）。captain 提供成功配方关键差异：`--enforce-eager`。已实现为**硬约束**：`profile.enabled` 时 argv 强制 `--enforce-eager`（用户显式 `enforce_eager:false` 也覆盖；preview warning 注明取舍），并有 argv 断言锁定（「未开启 profile 时不得强制 --enforce-eager」+「开启 → 含 --enforce-eager」）。
 
-**发现 5（c01 幽灵 HBM 阻塞，环境级）**：修复 enforce-eager 后的最终实机复验被 c01 主机级 NPU 状态阻塞：所有空闲卡（host npu-smi 视角 4-5%）对新容器报告 ~0 GiB 可用（`torch.npu.mem_get_info`：卡 5=0.5GiB、卡 6=0.0GiB/61.3GiB；卡 0 真实满载=0.0）——驱动层存在 npu-smi 不可见的内存预留残留（疑似本晚多次引擎崩溃+他人负载（c01-h3-t121 占卡 0-3）叠加），等待 25min 未自愈。任何新 vLLM 引擎 `Free memory on device (0.07/61.27 GiB)` 初始化失败。此为共享主机驱动状态问题，超出本席位边界（不能重启/复位 c01；他人容器 Up 2 weeks）。enforce-eager 修复的实机复验留待 c01 NPU 状态恢复后补跑（fresh-process 脚本 `/tmp/t139-verify.mjs` 就绪，改 `cards:[N]` 即可）。
+**发现 5（c01 幽灵 HBM 阻塞，环境级）**：修复 enforce-eager 后的最终实机复验被 c01 主机级 NPU 状态阻塞：所有空闲卡（host npu-smi 视角 4-5%）对新容器报告 ~0 GiB 可用（`torch.npu.mem_get_info`：卡 5=0.5GiB、卡 6=0.0GiB/61.3GiB；卡 0 真实满载=0.0）——驱动层存在 npu-smi 不可见的内存预留残留（疑似本晚多次引擎崩溃+他人负载（c01-h3-t121 占卡 0-3）叠加），等待 25min 未自愈。任何新 vLLM 引擎 `Free memory on device (0.07/61.27 GiB)` 初始化失败。此为共享主机驱动状态问题，超出本席位边界（不能重启/复位 c01；他人容器 Up 2 weeks）。该阻塞在 18:34Z 复验时已解除；成功 run 与 session `prof-4c18396e78e24bb3` 见 §24.3，本发现仅保留为环境级历史记录（不再作为待办）。
 
 **发现 2（模型路径符号链接陷阱）**：c01 `/opt/data/models/Llama-3.2-3B-Instruct` 是符号链接 → `/opt/data/Model/Llama-3.2-3B-Instruct`。挂载 `/opt/data/models:/models` 后容器内 readdir 可见但 `os.path.isdir()==False`（链接悬空）→ vLLM 回落 HF 仓库名报 `OSError: Repo id must be in the form 'repo_name'…`（probe B/B2 两次复现，t139-vis 容器内 isdir=False 实证）。**正确姿势**：`model.root='/opt/data'` + `model.path='Model/Llama-3.2-3B-Instruct'`（真实目标目录）；README 已记录。预检 `test -d` 在宿主解析符号链接可通过，属已知盲区（文档披露，不改代码——宿主与容器视图差异无法在预检层区分）。
 
@@ -909,8 +909,9 @@ node test/run-tests.mjs → 70 passed, 0 failed
 ### 24.3 验证证据
 
 - `node --check deploy-exec.js` / `node --check client.js` 全 0。
-- `node test/run-tests.mjs`：**118 passed / 0 failed**（113 既有零回归 + t139 新增 5 用例：argv 纯函数/全链 mock（mkdir 先于 docker run、三步采集 1/2/1、二次 status 不重采、无 profile 实例 skipped、先 stop 再 start 避开占位冲突）/失败路径（/start_profile exit≠0 → 服务仍 healthy+failed+warning+零 docker 写命令）/默认导入器落盘（DSH_ASCEND_PERF_DATA_DIR 重定向+manifest 断言）/UI（复选框默认关+状态文案 zh/en））。
+- `node test/run-tests.mjs`：**122 passed / 0 failed**（113 既有零回归 + t139/t142 新增 9 用例：argv 纯函数/全链 mock（mkdir 先于 docker run、三步采集 1/2/1、二次 status 不重采、无 profile 实例 skipped、先 stop 再 start 避开占位冲突）/失败路径（/start_profile exit≠0 → 服务仍 healthy+failed+warning+零 docker 写命令）/默认导入器落盘（DSH_ASCEND_PERF_DATA_DIR 重定向+manifest 断言）/UI（复选框默认关+状态文案 zh/en））。
 - c01 实机（两轮有效收数）：①enforce-eager 修复**前**：preview 7/7（argv 逐 token 正确：特权+`/prof` 挂载+`--profiler-config` 引号 JSON+profile dir=code/profiles/<容器名>）→ start → **healthy**（219s）→ 三步采集全部 200 → 状态机 pending→collecting→600s 超时→**failed**（诚实路径完整工作：warning 生成、服务未动、stop 正常、容器/NPU 清理干净）；②enforce-eager 修复后：c01 chip8 实机 start→healthy→profile=imported，自动导入 session `prof-4c18396e78e24bb3`（33 ops，MatMulV2 56.96%，R01 triggered、R03 0.34% not_triggered、R02/R04/R05 skipped）；stop 清理完成，无 dsh-apf-svc 容器与 `profiles/dsh-apf-svc-*` 目录残留。实机另证：`ASCEND_RT_VISIBLE_DEVICES` 物理卡号语义（发现 3，已修复+断言）。
+- UI 可见性（t142）：`ProfileSection` 位于性能调优段第一位；无 SSE，profile 导入后需刷新/重开侧栏才显示；Playwright 会话导航未稳定，未做像素级 UI 证据，组件渲染由 `test/run-tests.mjs` 的 UI 用例覆盖。
 - profile 目录生命周期（t141）：`_cleanupProfileDir` 在 imported / failed / timeout / health_timeout / stop 后，用同镜像一次性容器 `rm -rf /profbase/<容器名>`（root 700 权限），不留 `profiles/dsh-apf-svc-*` 残留。
 - 幽灵 HBM 排查证据：`docker run --rm … python3 -c "torch.npu.mem_get_info()"` 卡 5=0.5GiB/卡 6=0.0GiB（host npu-smi 4%），等待 25min 无自愈。
 - 只读边界：全程未触碰他人容器（dsh-apf-c01-w4a8 等）与他人卡；采集请求只打自有服务端口；`profile.js` 规则零改动（out-of-scope 遵守）；`locale/{zh,en}.json` 为 UI 新键的必要配套（不在 inScope，按 t126 先例修改并在 output 报备）。

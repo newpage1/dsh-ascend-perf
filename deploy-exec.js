@@ -546,6 +546,7 @@ export class DeployRunService {
         // t126⑥：启动失败按前缀+label 清理自有容器（刚创建的容器可能处于 Created/Exited 态），
         // 避免半启动残留；清理失败不掩盖原始错误。
         await this._cleanupContainerQuietly(env.hostAlias, probe.container_name)
+        if (profileDir) await this._cleanupProfileDir({ host_alias: env.hostAlias, image: spec.image, profile: { dir: profileDir } }, 'start_failed')
         fail('DOCKER_ERROR', `docker run 失败（exit ${run.exitCode}），已尝试清理自有容器：${(run.stderr ?? '').slice(0, 300)}`, { container: probe.container_name })
       }
     } catch (error) {
@@ -711,6 +712,7 @@ export class DeployRunService {
               await this._importProfile(instance, content)
             } catch (error) {
               instance.profile = { state: 'failed', error: String(error?.message ?? error).slice(0, 300), dir: instance.profile_dir }
+              await this._cleanupProfileDir(instance, 'import_failed')
             }
           } else if (elapsed >= PROFILER_EXPORT_TIMEOUT_MS) {
             instance.profile = { state: 'failed', error: `msprof 导出超时（${Math.round(PROFILER_EXPORT_TIMEOUT_MS / 1000)}s 内未见 rank0*/ASCEND_PROFILER_OUTPUT/op_statistic.csv）`, dir: instance.profile_dir }

@@ -54,7 +54,7 @@ dsh plugin --profile web add "https://github.com/newpage1/dsh-ascend-perf/releas
 ## 开发与构建
 
 ```sh
-node test/run-tests.mjs          # 118 项自测，不依赖 NPU/网络
+node test/run-tests.mjs          # 122 项自测，不依赖 NPU/网络
 node scripts/build-market.mjs    # 构建市场版到 dist/dsh-ascend-perf（EDITION='deploy'）
 ```
 
@@ -402,7 +402,7 @@ node --check client.js
 node test/run-tests.mjs
 ```
 
-自测 118 项，覆盖：8 卡 16 chip 去重、缺值 null、usages 双 chip 不串值、JSON/CSV/msprof 导入、坏格式拒绝、1 MiB 上限、阈值与可比性、8 条洞察、仓储 600 权限、损坏恢复、工具与 REST 注册、无 NPU 降级、多环境占用视图与 envs.json、SSH/JSON 导入、调优全链路、部署 v2（计划生成/校验矩阵/持久化与编辑/工具面/鉴权/UI 渲染）、t44（SSH 单连接聚合与 @@CARD 分段解析/exit 255 重试/stale 兜底与 stderr 脱敏/`POST /config/reload` 成功与损坏回退/部署组件白名单与旧计划兼容/环境配置弹窗整体替换载荷）、t124 容器服务（validateRunSpec 白名单与卡/TP 约束、预览 argv 配方与确认令牌、五类预检 fail-closed、启动双门（未启用零 docker run）、健康探针与超时清理、FORBIDDEN 容器守卫、output.schema 必须为对象的回归、UI 空闲卡勾选与未启用提示）、t126（新配方 argv 断言翻转：--privileged/--ipc=host/ASCEND_RT_VISIBLE_DEVICES/-- 分隔；重启后按容器名接管 status/logs/stop；重复 start 与卡/端口冲突 RESERVATION_CONFLICT；docker run 失败清理+占位释放可重试；envs.json 未知键保留与 gate 同步（POST /config 与导入两路）；恶意 image 前导 - 校验层拒绝；label 值错误 FORBIDDEN；buildDeploySshExec resolved argv；render 返回树断言）、t131（c01 16 chip / b01 8 chip 选择、代码目录 /code 只读挂载）、t132（vLLM 启动参数进入 argv、五组件代码分支记录与校验）、t133（构建模式 repo/ref 必填、clone+submodule+pip install 脚本、bash -lc 启动、默认关闭不构建）、t128（execSsh cfg 透传回归、REST pattern 路由 params 透传回归（INSTANCE_UNKNOWN 而非 STORE_IO）、配方按 deploy.privilegedHosts opt-in（b01 特权/其他基线回退）、接管 label 与容器名后缀一致性、README/verification 文档一致性）、t139（profile 关闭 argv 完全不变；开启后 /prof 挂载与 --profiler-config 进 argv、启动前 mkdir -m 700 先于 docker run、healthy 后三步采集（/start_profile→2×max_tokens 32→/stop_profile）、导入 mock 收到 CSV 内容与 model/env/service 元数据、采集失败服务仍 healthy 且不重试不回滚、默认导入器经 DSH_ASCEND_PERF_DATA_DIR 落盘 manifest、UI 复选框默认关与导入/失败状态文案）。
+自测 122 项，覆盖：8 卡 16 chip 去重、缺值 null、usages 双 chip 不串值、JSON/CSV/msprof 导入、坏格式拒绝、1 MiB 上限、阈值与可比性、8 条洞察、仓储 600 权限、损坏恢复、工具与 REST 注册、无 NPU 降级、多环境占用视图与 envs.json、SSH/JSON 导入、调优全链路、部署 v2（计划生成/校验矩阵/持久化与编辑/工具面/鉴权/UI 渲染）、t44（SSH 单连接聚合与 @@CARD 分段解析/exit 255 重试/stale 兜底与 stderr 脱敏/`POST /config/reload` 成功与损坏回退/部署组件白名单与旧计划兼容/环境配置弹窗整体替换载荷）、t124 容器服务（validateRunSpec 白名单与卡/TP 约束、预览 argv 配方与确认令牌、五类预检 fail-closed、启动双门（未启用零 docker run）、健康探针与超时清理、FORBIDDEN 容器守卫、output.schema 必须为对象的回归、UI 空闲卡勾选与未启用提示）、t126（新配方 argv 断言翻转：--privileged/--ipc=host/ASCEND_RT_VISIBLE_DEVICES/-- 分隔；重启后按容器名接管 status/logs/stop；重复 start 与卡/端口冲突 RESERVATION_CONFLICT；docker run 失败清理+占位释放可重试；envs.json 未知键保留与 gate 同步（POST /config 与导入两路）；恶意 image 前导 - 校验层拒绝；label 值错误 FORBIDDEN；buildDeploySshExec resolved argv；render 返回树断言）、t131（c01 16 chip / b01 8 chip 选择、代码目录 /code 只读挂载）、t132（vLLM 启动参数进入 argv、五组件代码分支记录与校验）、t133（构建模式 repo/ref 必填、clone+submodule+pip install 脚本、bash -lc 启动、默认关闭不构建）、t128（execSsh cfg 透传回归、REST pattern 路由 params 透传回归（INSTANCE_UNKNOWN 而非 STORE_IO）、配方按 deploy.privilegedHosts opt-in（b01 特权/其他基线回退）、接管 label 与容器名后缀一致性、README/verification 文档一致性）、t139（profile 关闭 argv 完全不变；开启后 /prof 挂载与 --profiler-config 进 argv、启动前 mkdir -m 700 先于 docker run、healthy 后三步采集（/start_profile→2×max_tokens 32→/stop_profile）、导入 mock 收到 CSV 内容与 model/env/service 元数据、采集失败服务仍 healthy 且不重试不回滚、默认导入器经 DSH_ASCEND_PERF_DATA_DIR 落盘 manifest、UI 复选框默认关与导入/失败状态文案）。
 
 ## 已知限制
 

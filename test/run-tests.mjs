@@ -4012,6 +4012,7 @@ test('t139 失败路径：采集失败服务仍 healthy，profile.state=failed +
   assert.equal(status.data.profile.state, 'failed')
   assert.ok(String(status.data.profile.error ?? '').includes('/start_profile'))
   assert.ok((status.warnings ?? []).some((w) => w.includes('profile 采集失败')), 'status warning 如实给出失败原因')
+  assert.ok(calls.some((c) => c.includes('rm -rf /profbase/')), '采集失败后清理 profile 目录')
   assert.ok(!calls.some((c) => c.includes('docker stop') || c.includes('docker rm -f')), '失败不回滚/不杀服务')
   const listed = await svc.listInstances()
   assert.equal(listed.data.instances.length, 1, '实例保留在列表')
@@ -4078,6 +4079,91 @@ test('t139 UI：复选框默认关 + 实例行 profile 状态文案', async () =
   assert.ok(mod.__test.en['deploy.run.profileSkipped'])
 })
 
+
+test('t139 start 失败：docker run 失败时清理已创建的 profileDir', async () => {
+  const calls = []
+  const exec = async (hostAlias, command) => {
+    calls.push(command)
+    if (command.includes('docker run -d')) return { exitCode: 1, stdout: '', stderr: 'docker: boom' }
+    if (command.includes('rm -rf /profbase/')) return { exitCode: 0, stdout: '', stderr: '' }
+    if (command.includes('docker rm -f')) return { exitCode: 0, stdout: '', stderr: '' }
+    for (const [needle, out] of t124DefaultScript()) if (command.includes(needle)) return out
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const svc = new DeployRunService({ getEnv: t124GetEnv(), execSsh: exec, isRealExecutionEnabled: () => true })
+  const preview = await svc.preview(T139_SPEC)
+  await assert.rejects(() => svc.start({ ...T139_SPEC, confirmation_token: preview.data.confirmation_token }), (e) => e?.code === 'DOCKER_ERROR')
+  assert.ok(calls.some((c) => c.includes('rm -rf /profbase/')), 'start 失败清理 profile 目录')
+})
+
+test('t139 stop：pending/collecting 的 profileDir 在 stop 后清理', async () => {
+  const calls = []
+  let inspectOut = null
+  const exec = async (hostAlias, command) => {
+    calls.push(command)
+    if (command.includes('docker inspect')) return inspectOut
+    if (command.includes('docker run')) return { exitCode: 0, stdout: 'cidstop\n', stderr: '' }
+    if (command.includes('rm -rf /profbase/')) return { exitCode: 0, stdout: '', stderr: '' }
+    for (const [needle, out] of t124DefaultScript()) if (command.includes(needle)) return out
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const svc = new DeployRunService({ getEnv: t124GetEnv(), execSsh: exec, isRealExecutionEnabled: () => true })
+  const preview = await svc.preview(T139_SPEC)
+  await svc.start({ ...T139_SPEC, confirmation_token: preview.data.confirmation_token })
+  inspectOut = { exitCode: 0, stdout: `/${preview.data.container_name}|true|0|${preview.data.service_id}\n`, stderr: '' }
+  await svc.stop(preview.data.service_id)
+  assert.ok(calls.some((c) => c.includes('rm -rf /profbase/')), 'stop 清理 profile 目录')
+})
+
+test('t139 timeout：采集导出超时后清理 profileDir', async () => {
+  let clock = 1731600000000
+  const calls = []
+  let inspectOut = null
+  const exec = async (hostAlias, command) => {
+    calls.push(command)
+    if (command.includes('docker inspect')) return inspectOut
+    if (command.includes('find /prof -name op_statistic.csv')) return { exitCode: 0, stdout: '', stderr: '' }
+    if (command.includes('docker run')) return { exitCode: 0, stdout: 'cidto\n', stderr: '' }
+    if (command.includes('/v1/models')) return { exitCode: 0, stdout: 'HEALTHY\n', stderr: '' }
+    if (command.includes('/start_profile') || command.includes('/v1/completions') || command.includes('/stop_profile')) return { exitCode: 0, stdout: '', stderr: '' }
+    for (const [needle, out] of t124DefaultScript()) if (command.includes(needle)) return out
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const svc = new DeployRunService({ getEnv: t124GetEnv(), execSsh: exec, isRealExecutionEnabled: () => true, now: () => new Date(clock) })
+  const preview = await svc.preview(T139_SPEC)
+  await svc.start({ ...T139_SPEC, confirmation_token: preview.data.confirmation_token })
+  inspectOut = { exitCode: 0, stdout: `/${preview.data.container_name}|true|0|${preview.data.service_id}\n`, stderr: '' }
+  await svc.status(preview.data.service_id)
+  clock += 700000
+  const status = await svc.status(preview.data.service_id)
+  assert.equal(status.data.profile.state, 'failed')
+  assert.ok(String(status.data.profile.error ?? '').includes('导出超时'))
+  assert.ok(calls.some((c) => c.includes('rm -rf /profbase/')), 'timeout 后清理 profile 目录')
+})
+
+test('t139 health timeout：健康超时删容器并清理 profileDir', async () => {
+  let clock = 1731600000000
+  const calls = []
+  let inspectOut = null
+  const exec = async (hostAlias, command) => {
+    calls.push(command)
+    if (command.includes('docker inspect')) return inspectOut
+    if (command.includes('/v1/models')) return { exitCode: 0, stdout: 'NOT_YET\n', stderr: '' }
+    if (command.includes('rm -rf /profbase/')) return { exitCode: 0, stdout: '', stderr: '' }
+    if (command.includes('docker rm -f')) return { exitCode: 0, stdout: '', stderr: '' }
+    if (command.includes('docker run')) return { exitCode: 0, stdout: 'cidh\n', stderr: '' }
+    for (const [needle, out] of t124DefaultScript()) if (command.includes(needle)) return out
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const svc = new DeployRunService({ getEnv: t124GetEnv(), execSsh: exec, isRealExecutionEnabled: () => true, now: () => new Date(clock) })
+  const preview = await svc.preview(T139_SPEC)
+  await svc.start({ ...T139_SPEC, confirmation_token: preview.data.confirmation_token })
+  inspectOut = { exitCode: 0, stdout: `/${preview.data.container_name}|true|0|${preview.data.service_id}\n`, stderr: '' }
+  clock += (T139_SPEC.params.health_timeout_s + 1) * 1000
+  const status = await svc.status(preview.data.service_id)
+  assert.equal(status.data.health, 'error')
+  assert.ok(calls.some((c) => c.includes('rm -rf /profbase/')), 'health timeout 后清理 profile 目录')
+})
 
 await Promise.all(pending)
 const summary = `${passed} passed, ${failures.length} failed`
