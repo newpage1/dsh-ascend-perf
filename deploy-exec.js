@@ -699,6 +699,7 @@ export class DeployRunService {
             await this._beginProfileCapture(instance)
           } catch (error) {
             instance.profile = { state: 'failed', error: String(error?.message ?? error).slice(0, 300), dir: instance.profile_dir }
+            await this._cleanupProfileDir(instance, 'failed')
           }
         }
         if (instance.profile?.state === 'collecting') {
@@ -713,6 +714,7 @@ export class DeployRunService {
             }
           } else if (elapsed >= PROFILER_EXPORT_TIMEOUT_MS) {
             instance.profile = { state: 'failed', error: `msprof 导出超时（${Math.round(PROFILER_EXPORT_TIMEOUT_MS / 1000)}s 内未见 rank0*/ASCEND_PROFILER_OUTPUT/op_statistic.csv）`, dir: instance.profile_dir }
+            await this._cleanupProfileDir(instance, 'timeout')
           }
           // 仍无文件且未超时 → 保持 collecting，下一次 status 继续等（服务不受影响）。
         }
@@ -721,6 +723,7 @@ export class DeployRunService {
         await this._execSsh(hostAlias, `docker rm -f ${quotePosix(instance.container_name)} >/dev/null 2>&1 || true`, 30000)
         health = 'error'
         cleanup = `health timeout after ${instance.health_timeout_s}s (container removed)`
+        await this._cleanupProfileDir(instance, 'health_timeout')
       }
     }
     if (health === 'stopped' || health === 'error' || health === 'gone') {
@@ -785,6 +788,7 @@ export class DeployRunService {
       fail('PROFILE_CAPTURE_FAILED', `profile 导入未返回 session_id：${JSON.stringify(imported ?? null).slice(0, 200)}`)
     }
     instance.profile = { state: 'imported', session_id: imported.session_id, dir: instance.profile_dir }
+    await this._cleanupProfileDir(instance, 'imported')
   }
 
   // t126②：终态/停止后释放占位（按 service_id 或容器名匹配）。
@@ -822,6 +826,23 @@ export class DeployRunService {
     return runEnvelope('logs', { data: { container_name: instance.container_name, tail: tailN, log: String(probe.stdout ?? '').slice(0, 64 * 1024) } })
   }
 
+  // t141：profile 目录由容器内 root 创建；停止/失败/导入后都必须清理，避免 code/profiles 残留。
+  // 用同镜像一次性容器删（宿主用户对 root 700 目录无权限），只删本服务自己的 <container> 子目录。
+  async _cleanupProfileDir(instance, reason = '') {
+    const dir = instance?.profile?.dir || instance?.profile_dir
+    if (!dir || instance?.profile?.cleaned === true) return
+    const idx = String(dir).lastIndexOf('/')
+    const parent = idx > 0 ? String(dir).slice(0, idx) : ''
+    const base = idx > 0 ? String(dir).slice(idx + 1) : ''
+    if (!parent || !/^[A-Za-z0-9._-]+$/.test(base)) return
+    try {
+      await this._execSsh(instance.host_alias,
+        `docker run --rm -v ${quotePosix(parent)}:/profbase ${quotePosix(instance.image)} bash -lc ${quotePosix(`rm -rf /profbase/${base}`)} >/dev/null 2>&1 || true`,
+        60000)
+    } catch { /* 清理 best-effort；不影响服务状态 */ }
+    if (instance.profile && typeof instance.profile === 'object') instance.profile.cleaned = true
+  }
+
   async stop(idOrName, { origin = 'rest' } = {}) {
     let instance = this._resolveInstance(idOrName)
     if (!instance) {
@@ -836,6 +857,7 @@ export class DeployRunService {
     // t126⑥：停止语义 = docker stop -t 30 后 **docker rm**（自有容器不保留 Exited 态，避免 stopped 容器累积）
     const probe = await this._execSsh(instance.host_alias, `docker stop -t 30 ${quotePosix(instance.container_name)} && docker rm ${quotePosix(instance.container_name)} >/dev/null`, 90000)
     if (probe.exitCode !== 0) fail('DOCKER_ERROR', `docker stop/rm 失败（exit ${probe.exitCode}）：${(probe.stderr ?? '').slice(0, 200)}`)
+    await this._cleanupProfileDir(instance, 'stop')
     this._instances.delete(instance.service_id)
     this._releaseReservation(instance)
     return runEnvelope('stop', { data: { container_name: instance.container_name, stopped: true, removed: true, adopted: Boolean(instance.adopted) }, executes: true })

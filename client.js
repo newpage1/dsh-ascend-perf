@@ -397,6 +397,13 @@ window.__ModuleLoader__.load({
       'deploy.run.gpuMemory': 'gpu-memory-utilization',
       'deploy.run.prefixCache': '启用 prefix caching',
       'deploy.run.enforceEager': 'enforce-eager',
+      'deploy.run.profile': '部署后自动采集 profile（vLLM）',
+      'deploy.run.profileHint': '服务 healthy 后自动 /start_profile → 2 个短请求 → /stop_profile，并把 op_statistic.csv 导入「性能调优」段；kernel_details 暂不导入，采集失败不影响服务。',
+      'deploy.run.profileImported': 'profile 已导入 {id}',
+      'deploy.run.profileFailed': 'profile 采集失败：{msg}',
+      'deploy.run.profilePending': 'profile 待采集（等服务 healthy）',
+      'deploy.run.profileCollecting': 'profile 采集中…',
+      'deploy.run.profileSkipped': 'profile 未启用',
       'deploy.run.codeBranches': '代码分支',
       'deploy.run.codeBranchesHint': '填分支/tag 后，勾选下方“按分支构建后启动”会真正 clone/checkout + pip install。',
       'deploy.run.build': '按分支构建后启动（容器内 clone + pip install）',
@@ -799,6 +806,13 @@ window.__ModuleLoader__.load({
       'deploy.run.gpuMemory': 'gpu-memory-utilization',
       'deploy.run.prefixCache': 'Enable prefix caching',
       'deploy.run.enforceEager': 'enforce-eager',
+      'deploy.run.profile': 'Auto-capture profile after deploy (vLLM)',
+      'deploy.run.profileHint': 'After the service turns healthy: /start_profile → 2 short requests → /stop_profile, then op_statistic.csv is imported into the Tuning segment. kernel_details is not imported; capture failure never affects the service.',
+      'deploy.run.profileImported': 'profile imported {id}',
+      'deploy.run.profileFailed': 'profile capture failed: {msg}',
+      'deploy.run.profilePending': 'profile pending (waiting for healthy)',
+      'deploy.run.profileCollecting': 'profile capturing…',
+      'deploy.run.profileSkipped': 'profile disabled',
       'deploy.run.codeBranches': 'Code branches',
       'deploy.run.codeBranchesHint': 'With a branch/tag and build enabled, the container clones/checks-out and pip-installs before serve.',
       'deploy.run.build': 'Build branches before start (clone + pip install in container)',
@@ -2286,7 +2300,7 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { loadSessions() }, [])
 
-      return h(Section, { title: t('profile.title') },
+      return h(Section, { title: t('profile.title') + (sessions?.length ? ' · ' + sessions.length : ''), 'data-testid': 'profile.section' },
         h('div', { style: s.muted }, t('profile.desc')),
         h('div', { 'data-testid': 'profile.import', style: { ...s.row, marginTop: '6px', flexWrap: 'wrap', gap: '6px' } },
           h('label', { style: { ...s.button, cursor: busy ? 'wait' : 'pointer' } },
@@ -2548,6 +2562,7 @@ window.__ModuleLoader__.load({
                       ? h(EnvsSection, { state, busy, onRefreshAll: refreshAll, onImported: importDone, onOpenConfig: () => setConfigOpen(true), onReloadConfig: reloadConfig, t })
                       : h(DeviceSection, { state, busy, onRefresh: refresh, onDemo: () => demo(true), t }))
                 : [
+                    h(ProfileSection, { key: 'prof', t }),
                     h(TuneJobs, { key: 'jobs', t }),
                     importing
                       ? h(ImportSheet, { key: 'sheet', t, demo: Boolean(state?.demo), onClose: () => setImporting(false), onDone: () => { setImporting(false); load() } })
@@ -2555,7 +2570,6 @@ window.__ModuleLoader__.load({
                     h(RunsSection, { key: 'runs', state, baselineId, candidateId, setBaselineId, setCandidateId, onImport: () => setImporting(true), onCompare: compare, busy, t }),
                     comparison ? h(CompareView, { key: 'cmp', comparison, baseline, candidate, onExport: exportSummary, onCopy: copySummary, t }) : null,
                     h(InsightSection, { key: 'ins', report, t }),
-                    h(ProfileSection, { key: 'prof', t }),
                   ],
               // t29 v1.5：环境段去噪——底部演示/刷新行与只读提示只在性能调优段出现（环境段保留「刷新全部」）
               segment === 'tune' ? bottomRow : null,
@@ -2860,6 +2874,7 @@ window.__ModuleLoader__.load({
       const [runBranches, setRunBranches] = useState({ vllm: '', 'vllm-ascend': '', lmcache: '', 'lmcache-ascend': '', mooncake: '' })
       const [runRepos, setRunRepos] = useState({ vllm: '', 'vllm-ascend': '', lmcache: '', 'lmcache-ascend': '', mooncake: '' })
       const [runBuild, setRunBuild] = useState(false)
+      const [runProfile, setRunProfile] = useState(false)
       const [lastBulk, setLastBulk] = useState(null)
       const [previewData, setPreviewData] = useState(null)
       const [previewWarnings, setPreviewWarnings] = useState([])
@@ -2884,6 +2899,7 @@ window.__ModuleLoader__.load({
         } : null,
         params: { port: Number(runPort), tensor_parallel: runCards.length, max_model_len: Number(runMml), health_timeout_s: Number(runHealth), max_num_seqs: Number(runMaxSeqs), max_num_batched_tokens: Number(runMaxBatched), gpu_memory_utilization: Number(runGpuMem), enable_prefix_caching: runPrefix, enforce_eager: runEager },
         cards: runCards.slice().sort((a, b) => a - b),
+        profile: runProfile ? { enabled: true } : null,
       })
 
       const previewBlocked = !modelPath
@@ -2948,7 +2964,7 @@ window.__ModuleLoader__.load({
           if (res?.data) {
             const next = res.data
             setInstances((prev) => (prev ?? []).map((it) => (it.service_id === instance.service_id || it.container_name === instance.container_name
-              ? { ...it, health: next.health, adopted: Boolean(next.adopted) } : it)))
+              ? { ...it, health: next.health, adopted: Boolean(next.adopted), profile: next.profile ?? it.profile } : it)))
           }
         } catch (error) {
           setRunError({ code: error?.code ?? 'NETWORK', message: String(error?.message ?? error) })
@@ -3064,8 +3080,12 @@ window.__ModuleLoader__.load({
             h('label', { style: { ...s.field, fontSize: '11px', flexDirection: 'row', alignItems: 'center', gap: '6px' } },
               h('input', { type: 'checkbox', checked: runEager, onChange: (event) => setRunEager(Boolean(event?.target?.checked)), 'data-testid': 'deploy.run.enforceEager' }),
               t('deploy.run.enforceEager')),
+            h('label', { style: { ...s.field, fontSize: '11px', flexDirection: 'row', alignItems: 'center', gap: '6px' } },
+              h('input', { type: 'checkbox', checked: runProfile, onChange: (event) => setRunProfile(Boolean(event?.target?.checked)), 'data-testid': 'deploy.run.profile' }),
+              t('deploy.run.profile')),
             h('span', { style: { ...s.muted, fontSize: '11px' } }, `${t('deploy.run.tp')} = ${runCards.length} chip`),
           ),
+          h('div', { style: { ...s.muted, fontSize: '10.5px', marginTop: '4px' } }, t('deploy.run.profileHint')),
           h('div', { style: { ...s.muted, fontSize: '11px', marginTop: '4px' } }, t('deploy.run.tokenHint')),
           h('div', { style: { ...s.muted, fontSize: '11px', marginTop: '10px', fontWeight: 600 } }, t('deploy.run.codeBranches')),
           h('div', { style: { ...s.muted, fontSize: '11px', marginTop: '2px' } }, t('deploy.run.codeBranchesHint')),
@@ -3109,6 +3129,11 @@ window.__ModuleLoader__.load({
                 h('span', { style: { fontSize: '12px', color: c.text, fontWeight: 600 } }, instance.container_name),
                 h('span', { style: { ...s.muted, fontSize: '11px' } },
                   `${envDisplayName({ name: instance.host_alias, host_alias: instance.host_alias }, null)} · ${t('deploy.run.cards')}: ${(instance.cards ?? []).join(',')} · :${instance.port ?? '--'} · ${instance.started_at ? timeText(instance.started_at) : '--'}${instance.health ? ` · ${instance.health}` : ''}`),
+                instance.profile ? h('span', { 'data-testid': `deploy.run.instance.${instance.service_id}.profile`, style: { ...s.muted, fontSize: '11px', ...(instance.profile.state === 'imported' ? { color: '#059669' } : instance.profile.state === 'failed' ? { color: '#b45309' } : {}) } },
+                  instance.profile.state === 'imported' ? t('deploy.run.profileImported', { id: String(instance.profile.session_id ?? '').slice(0, 16) })
+                  : instance.profile.state === 'failed' ? t('deploy.run.profileFailed', { msg: instance.profile.error ?? '' })
+                  : instance.profile.state === 'collecting' ? t('deploy.run.profileCollecting')
+                  : instance.profile.state === 'pending' ? t('deploy.run.profilePending') : t('deploy.run.profileSkipped')) : null,
               ),
               h('button', { type: 'button', 'data-testid': `deploy.run.instance.${instance.service_id}.state`, onClick: () => doState(instance), style: { ...s.buttonGhost, fontSize: '11px', padding: '3px 10px' } }, t('deploy.run.state')),
               h('button', { type: 'button', 'data-testid': `deploy.run.instance.${instance.service_id}.logs`, onClick: () => doLogs(instance), style: { ...s.buttonGhost, fontSize: '11px', padding: '3px 10px' } }, t('deploy.run.logs')),

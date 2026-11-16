@@ -3966,6 +3966,8 @@ test('t139 全链：mkdir 先于 docker run / healthy 后三步采集 / 导入 m
   assert.equal(importerCalls[0].metadata.model_name, 'Qwen3-8B')
   assert.equal(importerCalls[0].metadata.service_id, preview.data.service_id)
   assert.equal(importerCalls[0].metadata.image, T139_SPEC.image)
+  // t141：导入成功后必须清理 profile 目录（root 700，用同镜像容器删）
+  assert.ok(calls.some(([, c]) => c.includes('rm -rf /profbase/')), 'imported 后清理 profile 目录')
   // 采集全程不碰容器生命周期
   assert.ok(!calls.some(([, c]) => c.includes('docker stop') || c.includes('docker rm -f')), '采集绝不停止/删除容器')
   // 不会重复采集

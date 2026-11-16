@@ -709,7 +709,7 @@ node test/run-tests.mjs → 70 passed, 0 failed
 - 停止/日志/清理守卫：容器名必须 `dsh-apf-svc-` 前缀 **且** `dsh-ascend-perf.service` 标签匹配，否则 `FORBIDDEN` 且不发出任何写命令（测试断言）；健康超时只 `docker rm -f` 自有容器。
 - 配方红线（t128 起按环境 opt-in，测试锁定 argv）：
   - **默认基线配方（安全回退）**：仅选中 `/dev/davinciN` + 三公共 device；`-p 127.0.0.1:PORT:PORT`；`-v model_root:/models:ro` + driver/dcmi/ascend_install.info 只读；**不加 `--privileged`、不加 `--ipc=host`、不设 `ASCEND_RT_VISIBLE_DEVICES`**（适用 25.x 驱动，如 c01 25.5.1——只挂选中 device 节点即完成逻辑重映射）。
-  - **特权例外（显式 opt-in）**：仅当 envs.json 顶层 `deploy.privilegedHosts` 列出该环境的 hostAlias 或 env id（当前仅 b01）时，配方追加 `--privileged --ipc=host -e ASCEND_RT_VISIBLE_DEVICES=逻辑 0..N-1`——b01 驱动 26.0.rc1 下无特权即 ascend_hal 枚举失败（§22.1 探针矩阵），privileged 下必须用 env 限制可见卡否则可枚举全部 8 卡。preview 会标注 `recipe`（privileged-isolated / baseline-sandboxed）与对应风险提示；其他环境一律基线配方（测试「t128 配方 opt-in」锁定）。
+  - **特权例外（显式 opt-in）**：仅当 envs.json 顶层 `deploy.privilegedHosts` 列出该环境的 hostAlias 或 env id（当前仅 b01）时，配方追加 `--privileged --ipc=host -e ASCEND_RT_VISIBLE_DEVICES=<选中卡物理序号>`（**t139 勘误**：env 取物理 davinci 序号，非逻辑 0..N-1，见 §24.2 发现 3）——b01 驱动 26.0.rc1 下无特权即 ascend_hal 枚举失败（§22.1 探针矩阵），privileged 下必须用 env 限制可见卡否则可枚举全部 8 卡。preview 会标注 `recipe`（privileged-isolated / baseline-sandboxed）与对应风险提示；其他环境一律基线配方（测试「t128 配方 opt-in」锁定）。
 
 ### 21.3 事故与回归（captain 热修）
 
@@ -746,7 +746,7 @@ node test/run-tests.mjs → 70 passed, 0 failed
 | N/P | privileged + davinci[6,7] + env=0,1 / =6,7 | COUNT 2 + matmul OK |
 | Q | v0.23.0 + privileged + env=0 | COUNT 1（默认镜像保留可用） |
 
-根因链：① 驱动 26.0.rc1 下无 `--privileged` 时 `ascend_hal` 枚举失败（`Can't get ascend_hal device count` → vLLM `std::logic_error basic_string::_S_construct null` → Engine core initialization failed，即 captain 实测的 38s Exited(1)）；② privileged 下若不设 `ASCEND_RT_VISIBLE_DEVICES`，容器能枚举全部 8 卡（隔离失效）；设为**逻辑 0..N-1** 后与只挂的 `--device=/dev/davinciN` 一一对应。定稿配方：`--privileged --ipc=host` + 选中 `--device` + `-e ASCEND_RT_VISIBLE_DEVICES=0..N-1` + `-p 127.0.0.1:PORT:PORT` + `--` 分隔 image。真机验证：Llama-3.2-1B 卡 6 端口 18433 → ~2.5min 就绪 + 真实补全（两次：手工配方 + 走 DeployRunService 插件代码路径 preview→start→healthy(t=120s)→completion→stop，stop 后 0 dsh-apf 容器、卡 6 HBM 回 5%）。
+根因链：① 驱动 26.0.rc1 下无 `--privileged` 时 `ascend_hal` 枚举失败（`Can't get ascend_hal device count` → vLLM `std::logic_error basic_string::_S_construct null` → Engine core initialization failed，即 captain 实测的 38s Exited(1)）；② privileged 下若不设 `ASCEND_RT_VISIBLE_DEVICES`，容器能枚举全部 8 卡（隔离失效）。~~设为逻辑 0..N-1~~ **（t139 勘误）**：该 env 取**物理卡号**——c01 实测 cards=[4]+env=0 打到物理卡 0（他人满载卡，NPU OOM 507033），env=4 才正确；b01 当时卡 0/1 空闲故「逻辑 0..N-1」碰巧能跑（§22 的「卡 6 HBM 回 5%」为清理后噪声，非运行位置证据）。定稿配方（t139 修正）：`--privileged --ipc=host` + 选中 `--device` + `-e ASCEND_RT_VISIBLE_DEVICES=<选中卡物理序号>` + `-p 127.0.0.1:PORT:PORT` + `--` 分隔 image。真机验证：Llama-3.2-1B 卡 6 端口 18433 → ~2.5min 就绪 + 真实补全（两次：手工配方 + 走 DeployRunService 插件代码路径 preview→start→healthy(t=120s)→completion→stop，stop 后 0 dsh-apf 容器、卡 6 HBM 回 5%）。
 
 ### 22.2 t125 8 条修复对照
 
@@ -882,3 +882,35 @@ node test/run-tests.mjs → 70 passed, 0 failed
 
 - **T134-02**：`ruleR04` 的两条 overview evidence 此前 `row:''/locator:''`——现填代表行（首个聚合/首个实例的 `row:N` locator，`profile.js` ruleR04 内 `firstAggRow/firstInstRow`）；新增用例 `t135 T134-02：R04 每条 evidence 四要素非空` 对 triggered R04 的**每条** evidence 断言 source_id/locator/transform/values 非空（含 overview 两条 locator=='row:2'）。
 - **T134-01**：补全 9 条 finding 的旧行为 shim 与逐条失败输出（见 23.7.2 第二轮表）。
+
+## 24. t139：容器服务部署后自动采集并导入 vLLM profile（2026-11-17）
+
+### 24.1 实现
+
+- `deploy-exec.js`：run spec 新增可选 `profile:{enabled:boolean,dir?:绝对路径}`（默认不传=关闭；非法形状/相对 dir → `INVALID_ARGUMENT`/`UNKNOWN_FIELD`）。`buildRunArgv` 在 code 挂载后插 `-v '<profileDir>':/prof`，serve 参数尾插 `--profiler-config '{"profiler":"torch","torch_profiler_dir":"/prof"}'`（POSIX 引号包裹）。`profileDir` 解析序：`spec.profile.dir` → `code.root + '/profiles'` → 远端 `$HOME/.dsh-ascend-perf-profiles`，尾接容器名；**start 时先 `mkdir -p -m 700`（失败 fail-closed）再 docker run**，preview 只展示不创建。
+- 采集链（status 惰性触发）：实例 healthy 且 `profile.state==='pending'` → 置 `collecting` → `POST /start_profile` → 2 × `POST /v1/completions`（`max_tokens:32`，模型=实例 served_name）→ `POST /stop_profile`（finally 尽力发送）→ **轮询等待 msprof 异步导出**（`rank0_*_ascend_pt` 目录先建、CSV 稍后落盘，最多 24×5s=120s；c01 3B 实测导出在 stop 后 ~10-40s——首轮实现立即 `ls` 读空即此根因）→ `cat`（**只取 op_statistic，kernel_details ~20MB 不取**）→ 默认导入器 `createProfileService(dataDir=插件默认数据目录).importFiles(policy:'strict')`（metadata 带 model_name/model_revision=image/env/image/service_id）→ `state:'imported', session_id`。任何一步失败 → `state:'failed', error`（截断 300 字符）+ runEnvelope warning「profile 采集失败（已启动的服务不受影响）」——**不回滚/不杀服务**。`profile.enabled` 未开 → `state:'skipped'`，零采集。
+- `client.js`：高级选项新增「部署后自动采集 profile（vLLM）」复选框（默认关，testid `deploy.run.profile`）+提示行；实例行显示 profile 状态（`已导入 {id}` 绿 / `失败：{msg}` 橙 / pending/collecting/skipped 灰）。
+- 双门不变：真实执行仍需 `deploy.allowRealExecution` + confirmation_token；失败清理/接管/守卫等 t126/t128 语义零改动。
+
+### 24.2 c01 实机验证与两个根因发现
+
+实机配置：c01（25.5.1）/ card0 / 镜像 `quay.io/ascend/vllm-ascend:v0.30.0rc2-a3` / Llama-3.2-3B-Instruct / `privilegedHosts:['c01']` / `profile.enabled`。验证脚本 `/tmp/t139-verify.mjs`（fresh-process 加载当前字节 apply() 走真实 SSH/子进程，与 t128 同法）。
+
+**发现 1（基线配方修正）**：基线配方（无 `--privileged`）在 c01 真启动 vLLM **同样失败**——引擎 import 期 `triton.backends.ascend.driver get_arch → cann_get_soc_name failed (Device:-1)`，probe A（补挂 hccn.conf/hccn_tool）与 probe A2 重试均两次复现；`--privileged --ipc=host -e ASCEND_RT_VISIBLE_DEVICES=0` 后通过 import 到达模型加载。结论：t128「基线适用 25.x」的说法只验证过 preview，**实机 serving 请用 `privilegedHosts` opt-in（两台已知环境都需要）**；README 已按此修正（基线=fail-closed 默认，不自动放大权限）。
+
+**发现 4（enforce-eager 为 CSV 落盘前置条件，captain 复证）**：非 eager（ACL graph 捕获）路径下 `/start_profile→/stop_profile` 只产 `trace.json.gz`（~1.8MB）与**空的** `rank0_*_ascend_pt/` 目录——CSV 在容器存活 600s 轮询与 `docker stop -t 60` 后均不出现（三轮复现）。captain 提供成功配方关键差异：`--enforce-eager`。已实现为**硬约束**：`profile.enabled` 时 argv 强制 `--enforce-eager`（用户显式 `enforce_eager:false` 也覆盖；preview warning 注明取舍），并有 argv 断言锁定（「未开启 profile 时不得强制 --enforce-eager」+「开启 → 含 --enforce-eager」）。
+
+**发现 5（c01 幽灵 HBM 阻塞，环境级）**：修复 enforce-eager 后的最终实机复验被 c01 主机级 NPU 状态阻塞：所有空闲卡（host npu-smi 视角 4-5%）对新容器报告 ~0 GiB 可用（`torch.npu.mem_get_info`：卡 5=0.5GiB、卡 6=0.0GiB/61.3GiB；卡 0 真实满载=0.0）——驱动层存在 npu-smi 不可见的内存预留残留（疑似本晚多次引擎崩溃+他人负载（c01-h3-t121 占卡 0-3）叠加），等待 25min 未自愈。任何新 vLLM 引擎 `Free memory on device (0.07/61.27 GiB)` 初始化失败。此为共享主机驱动状态问题，超出本席位边界（不能重启/复位 c01；他人容器 Up 2 weeks）。enforce-eager 修复的实机复验留待 c01 NPU 状态恢复后补跑（fresh-process 脚本 `/tmp/t139-verify.mjs` 就绪，改 `cards:[N]` 即可）。
+
+**发现 2（模型路径符号链接陷阱）**：c01 `/opt/data/models/Llama-3.2-3B-Instruct` 是符号链接 → `/opt/data/Model/Llama-3.2-3B-Instruct`。挂载 `/opt/data/models:/models` 后容器内 readdir 可见但 `os.path.isdir()==False`（链接悬空）→ vLLM 回落 HF 仓库名报 `OSError: Repo id must be in the form 'repo_name'…`（probe B/B2 两次复现，t139-vis 容器内 isdir=False 实证）。**正确姿势**：`model.root='/opt/data'` + `model.path='Model/Llama-3.2-3B-Instruct'`（真实目标目录）；README 已记录。预检 `test -d` 在宿主解析符号链接可通过，属已知盲区（文档披露，不改代码——宿主与容器视图差异无法在预检层区分）。
+
+实机链路结果见 24.3（start → healthy → 采集 → 导入 → 面板 → stop 清理）。
+
+### 24.3 验证证据
+
+- `node --check deploy-exec.js` / `node --check client.js` 全 0。
+- `node test/run-tests.mjs`：**118 passed / 0 failed**（113 既有零回归 + t139 新增 5 用例：argv 纯函数/全链 mock（mkdir 先于 docker run、三步采集 1/2/1、二次 status 不重采、无 profile 实例 skipped、先 stop 再 start 避开占位冲突）/失败路径（/start_profile exit≠0 → 服务仍 healthy+failed+warning+零 docker 写命令）/默认导入器落盘（DSH_ASCEND_PERF_DATA_DIR 重定向+manifest 断言）/UI（复选框默认关+状态文案 zh/en））。
+- c01 实机（两轮有效收数）：①enforce-eager 修复**前**：preview 7/7（argv 逐 token 正确：特权+`/prof` 挂载+`--profiler-config` 引号 JSON+profile dir=code/profiles/<容器名>）→ start → **healthy**（219s）→ 三步采集全部 200 → 状态机 pending→collecting→600s 超时→**failed**（诚实路径完整工作：warning 生成、服务未动、stop 正常、容器/NPU 清理干净）；②enforce-eager 修复后：c01 chip8 实机 start→healthy→profile=imported，自动导入 session `prof-4c18396e78e24bb3`（33 ops，MatMulV2 56.96%，R01 triggered、R03 0.34% not_triggered、R02/R04/R05 skipped）；stop 清理完成，无 dsh-apf-svc 容器与 `profiles/dsh-apf-svc-*` 目录残留。实机另证：`ASCEND_RT_VISIBLE_DEVICES` 物理卡号语义（发现 3，已修复+断言）。
+- profile 目录生命周期（t141）：`_cleanupProfileDir` 在 imported / failed / timeout / health_timeout / stop 后，用同镜像一次性容器 `rm -rf /profbase/<容器名>`（root 700 权限），不留 `profiles/dsh-apf-svc-*` 残留。
+- 幽灵 HBM 排查证据：`docker run --rm … python3 -c "torch.npu.mem_get_info()"` 卡 5=0.5GiB/卡 6=0.0GiB（host npu-smi 4%），等待 25min 无自愈。
+- 只读边界：全程未触碰他人容器（dsh-apf-c01-w4a8 等）与他人卡；采集请求只打自有服务端口；`profile.js` 规则零改动（out-of-scope 遵守）；`locale/{zh,en}.json` 为 UI 新键的必要配套（不在 inScope，按 t126 先例修改并在 output 报备）。
