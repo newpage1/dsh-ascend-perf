@@ -4062,9 +4062,11 @@ test('t139 UI：复选框默认关 + 实例行 profile 状态文案', async () =
     envs: [{ id: 'env-b01', name: 'b01', mode: 'ssh', hostAlias: 'b01', enabled: true, snapshot: { npu: { cards: [{ card_id: 0, chips: [{ hbm_usage_rate_pct: 3, aicore_pct: 1 }] }] } } }],
     deploy_run: { real_execution_enabled: true },
   }
-  const block = renderNode(mod.__test.ContainerServicesBlock({ state, t }))
+  const blockDefault = renderNode(mod.__test.ContainerServicesBlock({ state, t }))
+  assert.ok(!findTestId(blockDefault, 'deploy.run.profile'), '服务部署页默认不渲染 profile 复选框')
+  const block = renderNode(mod.__test.ContainerServicesBlock({ state, t, profileAllowed: true }))
   const checkbox = findTestId(block, 'deploy.run.profile')
-  assert.ok(checkbox, '高级选项里有 profile 复选框')
+  assert.ok(checkbox, '性能调优页的部署块有 profile 复选框')
   assert.equal(checkbox.props.checked, false, '默认关闭')
   assert.ok(textOf(block).includes('部署后自动采集 profile（vLLM）'))
   const state2 = { ...state, envs: [] }

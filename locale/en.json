@@ -559,5 +559,7 @@
   "deploy.run.profileSummary": "Profile & recommendations",
   "deploy.run.profileOpen": "Open full analysis",
   "deploy.run.profileTop": "Top op",
-  "deploy.run.profileNoRules": "No high-priority rule triggered in this sample."
+  "deploy.run.profileNoRules": "No high-priority rule triggered in this sample.",
+  "profile.deployTitle": "Deploy with profile",
+  "profile.deployHint": "Only deployments started from the Tuning page enable the vLLM profiler. After health, op_statistic is imported and Top ops + recommendations appear below. The Service Deployment page stays profile-free for pure performance tests."
 }

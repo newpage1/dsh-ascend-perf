@@ -559,5 +559,7 @@
   "deploy.run.profileSummary": "Profile 与优化建议",
   "deploy.run.profileOpen": "查看完整分析",
   "deploy.run.profileTop": "Top 算子",
-  "deploy.run.profileNoRules": "本次采样未触发高优先级规则。"
+  "deploy.run.profileNoRules": "本次采样未触发高优先级规则。",
+  "profile.deployTitle": "带 profile 部署服务",
+  "profile.deployHint": "仅性能调优页发起的部署会启用 vLLM profiler；部署成功后自动采集 op_statistic 并在下方展示 Top 算子与优化建议。服务部署页保持无 profile，用于纯性能测试。"
 }

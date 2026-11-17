@@ -49,6 +49,8 @@ window.__ModuleLoader__.load({
       'profile.import': '导入 CSV',
       'profile.importHint': '选择一个或多个 msprof 导出的 CSV 文件（按表头指纹识别，不看文件名；单文件 ≤4 MiB、总量 ≤8 MiB）',
       'profile.demo': '加载演示 profile',
+      'profile.deployTitle': '带 profile 部署服务',
+      'profile.deployHint': '仅性能调优页发起的部署会启用 vLLM profiler；部署成功后自动采集 op_statistic 并在下方展示 Top 算子与优化建议。服务部署页保持无 profile，用于纯性能测试。',
       'profile.sessions': '已导入 session',
       'profile.sessionsEmpty': '尚无 profile session——导入 CSV 或加载演示数据开始分析。',
       'profile.select': '选择 session',
@@ -462,6 +464,8 @@ window.__ModuleLoader__.load({
       'profile.import': 'Import CSV',
       'profile.importHint': 'Pick one or more msprof-exported CSV files (identified by header fingerprint, not filename; ≤4 MiB per file, ≤8 MiB total)',
       'profile.demo': 'Load demo profile',
+      'profile.deployTitle': 'Deploy with profile',
+      'profile.deployHint': 'Only deployments started from the Tuning page enable the vLLM profiler. After health, op_statistic is imported and Top ops + recommendations appear below. The Service Deployment page stays profile-free for pure performance tests.',
       'profile.sessions': 'Imported sessions',
       'profile.sessionsEmpty': 'No profile session yet — import CSVs or load the demo data to start.',
       'profile.select': 'Select session',
@@ -2235,7 +2239,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function ProfileSection({ t }) {
+    function ProfileSection({ t, state }) {
       const [sessions, setSessions] = useState(null)
       const [selected, setSelected] = useState('')
       const [detail, setDetail] = useState(null)
@@ -2572,7 +2576,7 @@ window.__ModuleLoader__.load({
                       ? h(EnvsSection, { state, busy, onRefreshAll: refreshAll, onImported: importDone, onOpenConfig: () => setConfigOpen(true), onReloadConfig: reloadConfig, t })
                       : h(DeviceSection, { state, busy, onRefresh: refresh, onDemo: () => demo(true), t }))
                 : [
-                    h(ProfileSection, { key: 'prof', t }),
+                    h(ProfileSection, { key: 'prof', t, state }),
                     h(TuneJobs, { key: 'jobs', t }),
                     importing
                       ? h(ImportSheet, { key: 'sheet', t, demo: Boolean(state?.demo), onClose: () => setImporting(false), onDone: () => { setImporting(false); load() } })
@@ -2882,11 +2886,11 @@ window.__ModuleLoader__.load({
         top && ev.op_type ? h('div', { style: { ...s.muted, fontSize: '11px' } }, `${t('deploy.run.profileTop')}: ${ev.op_type} ${(Number(ev.recomputed_share ?? 0) * 100).toFixed(2)}%`) : h('div', { style: { ...s.muted, fontSize: '11px' } }, t('deploy.run.profileNoRules')),
         top?.conclusion ? h('div', { style: { fontSize: '11px', color: c.text } }, top.conclusion) : null,
         top?.actions?.[0] ? h('div', { style: { fontSize: '11px', color: '#b45309' } }, `→ ${top.actions[0]}`) : null,
-        h('button', { type: 'button', onClick: onOpen, style: { ...s.buttonGhost, fontSize: '11px', padding: '2px 8px', alignSelf: 'flex-start' } }, t('deploy.run.profileOpen')),
+        onOpen ? h('button', { type: 'button', onClick: onOpen, style: { ...s.buttonGhost, fontSize: '11px', padding: '2px 8px', alignSelf: 'flex-start' } }, t('deploy.run.profileOpen')) : null,
       )
     }
 
-    function ContainerServicesBlock({ state, t, onOpenProfile }) {
+    function ContainerServicesBlock({ state, t, onOpenProfile, profileAllowed = false }) {
       const envs = (state?.envs ?? []).filter((env) => env && env.enabled !== false && env.mode === 'ssh')
       const initialDefaults = envRunDefaults(envs[0])
       const [runEnvId, setRunEnvId] = useState(envs[0]?.id ?? '')
@@ -2931,7 +2935,7 @@ window.__ModuleLoader__.load({
         } : null,
         params: { port: Number(runPort), tensor_parallel: runCards.length, max_model_len: Number(runMml), health_timeout_s: Number(runHealth), max_num_seqs: Number(runMaxSeqs), max_num_batched_tokens: Number(runMaxBatched), gpu_memory_utilization: Number(runGpuMem), enable_prefix_caching: runPrefix, enforce_eager: runEager },
         cards: runCards.slice().sort((a, b) => a - b),
-        profile: runProfile ? { enabled: true } : null,
+        profile: profileAllowed && runProfile ? { enabled: true } : null,
       })
 
       const previewBlocked = !modelPath
@@ -3096,7 +3100,7 @@ window.__ModuleLoader__.load({
               )),
           ),
         ) : null,
-        envs.length > 0 ? h('div', { 'data-testid': 'deploy.run.profileBox', style: { ...s.card, padding: '8px 10px', marginBottom: '8px' } },
+        profileAllowed && envs.length > 0 ? h('div', { 'data-testid': 'deploy.run.profileBox', style: { ...s.card, padding: '8px 10px', marginBottom: '8px' } },
           h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: c.text, fontWeight: 600 } },
             h('input', { type: 'checkbox', checked: runProfile, onChange: (event) => setRunProfile(Boolean(event?.target?.checked)), 'data-testid': 'deploy.run.profile' }),
             t('deploy.run.profile')),
@@ -3169,7 +3173,7 @@ window.__ModuleLoader__.load({
                   : instance.profile.state === 'failed' ? t('deploy.run.profileFailed', { msg: instance.profile.error ?? '' })
                   : instance.profile.state === 'collecting' ? t('deploy.run.profileCollecting')
                   : instance.profile.state === 'pending' ? t('deploy.run.profilePending') : t('deploy.run.profileSkipped')) : null,
-                instance.profile?.state === 'imported' && instance.profile.session_id ? h(DeployProfileSummary, { sessionId: instance.profile.session_id, t, onOpen: () => onOpenProfile?.(instance.profile.session_id) }) : null,
+                profileAllowed && instance.profile?.state === 'imported' && instance.profile.session_id ? h(DeployProfileSummary, { sessionId: instance.profile.session_id, t, onOpen: onOpenProfile ? () => onOpenProfile(instance.profile.session_id) : null }) : null,
               ),
               h('button', { type: 'button', 'data-testid': `deploy.run.instance.${instance.service_id}.state`, onClick: () => doState(instance), style: { ...s.buttonGhost, fontSize: '11px', padding: '3px 10px' } }, t('deploy.run.state')),
               h('button', { type: 'button', 'data-testid': `deploy.run.instance.${instance.service_id}.logs`, onClick: () => doLogs(instance), style: { ...s.buttonGhost, fontSize: '11px', padding: '3px 10px' } }, t('deploy.run.logs')),
