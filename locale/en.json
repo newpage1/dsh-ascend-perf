@@ -555,5 +555,9 @@
   "profile.tooLarge": "Input too large (≤4 MiB per file, ≤8 MiB total) — rejected.",
   "profile.unsupported": "No recognizable profile file: header fingerprint did not match a verified format.",
   "profile.demoBadge": "DEMO",
-  "profile.importDone": "Imported: {n} records"
+  "profile.importDone": "Imported: {n} records",
+  "deploy.run.profileSummary": "Profile & recommendations",
+  "deploy.run.profileOpen": "Open full analysis",
+  "deploy.run.profileTop": "Top op",
+  "deploy.run.profileNoRules": "No high-priority rule triggered in this sample."
 }

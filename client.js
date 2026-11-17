@@ -399,6 +399,10 @@ window.__ModuleLoader__.load({
       'deploy.run.enforceEager': 'enforce-eager',
       'deploy.run.profile': '部署后自动采集 profile（vLLM）',
       'deploy.run.profileHint': '服务 healthy 后自动 /start_profile → 2 个短请求 → /stop_profile，并把 op_statistic.csv 导入「性能调优」段；kernel_details 暂不导入，采集失败不影响服务。',
+      'deploy.run.profileSummary': 'Profile 与优化建议',
+      'deploy.run.profileOpen': '查看完整分析',
+      'deploy.run.profileTop': 'Top 算子',
+      'deploy.run.profileNoRules': '本次采样未触发高优先级规则。',
       'deploy.run.profileImported': 'profile 已导入 {id}',
       'deploy.run.profileFailed': 'profile 采集失败：{msg}',
       'deploy.run.profilePending': 'profile 待采集（等服务 healthy）',
@@ -808,6 +812,10 @@ window.__ModuleLoader__.load({
       'deploy.run.enforceEager': 'enforce-eager',
       'deploy.run.profile': 'Auto-capture profile after deploy (vLLM)',
       'deploy.run.profileHint': 'After the service turns healthy: /start_profile → 2 short requests → /stop_profile, then op_statistic.csv is imported into the Tuning segment. kernel_details is not imported; capture failure never affects the service.',
+      'deploy.run.profileSummary': 'Profile & recommendations',
+      'deploy.run.profileOpen': 'Open full analysis',
+      'deploy.run.profileTop': 'Top op',
+      'deploy.run.profileNoRules': 'No high-priority rule triggered in this sample.',
       'deploy.run.profileImported': 'profile imported {id}',
       'deploy.run.profileFailed': 'profile capture failed: {msg}',
       'deploy.run.profilePending': 'profile pending (waiting for healthy)',
@@ -2159,8 +2167,8 @@ window.__ModuleLoader__.load({
       const tone = PROFILE_RULE_TONE[rule.status] ?? undefined
       const head = `${rule.rule_id} · ${t(`profile.rule.${rule.status}`)}`
       return h('div', { 'data-testid': `profile.rule.${rule.rule_id}`, style: { ...s.card, borderLeft: `3px solid ${rule.status === 'triggered' ? c.warn : rule.status === 'not_triggered' ? c.success : c.border}` } },
-        h('div', { style: s.row },
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
+        h('div', { style: { ...s.row, flexWrap: 'wrap' } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: 0 } },
             h('span', { style: { ...s.tag, color: c.text } }, rule.rule_id),
             h(Pill, { tone }, t(`profile.rule.${rule.status}`)),
             rule.confidence ? h('span', { style: s.muted }, `${t('profile.confidence')}: ${rule.confidence.description}${rule.confidence.causal ? ` (causal ${rule.confidence.causal})` : ''}`) : null,
@@ -2202,8 +2210,9 @@ window.__ModuleLoader__.load({
           h('div', { style: { ...s.muted, marginTop: '2px' } },
             `${t('profile.evidence')}: ${(manifest.files ?? []).map((f) => `${f.path_redacted} (${f.dialect}${f.validation === 'unsupported' ? ', unsupported' : ''})`).join(' · ')}`),
         ),
-        h('div', { 'data-testid': 'profile.top', style: s.card },
+        h('div', { 'data-testid': 'profile.top', style: { ...s.card, overflowX: 'auto' } },
           h('div', { style: { fontWeight: 600, fontSize: '12px', marginBottom: '6px' } }, t('profile.topOps')),
+          h('div', { style: { minWidth: '520px', display: 'flex', flexDirection: 'column', gap: '4px' } },
           h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr 48px 1fr 56px 56px', gap: '4px 8px', fontSize: '11px', color: c.textTertiary } },
             t('profile.col.type'), t('profile.col.core'), t('profile.col.calls'), t('profile.col.total'), t('profile.col.share'), t('profile.col.row'),
           ),
@@ -2215,6 +2224,7 @@ window.__ModuleLoader__.load({
             h('span', { style: s.num }, op.share == null ? '' : `${(op.share * 100).toFixed(1)}%`),
             h('span', { style: s.muted }, op.row ?? ''),
           )),
+          ),
         ),
         report
           ? h('div', { 'data-testid': 'profile.rules', style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
@@ -2551,7 +2561,7 @@ window.__ModuleLoader__.load({
         configOpen ? h(EnvConfigModal, { config: state?.config, busy, onSave: saveEnvConfig, onClose: () => setConfigOpen(false), t }) : null,
         h(SegmentedControl, { value: segment, onChange: setSegment, options: segOptions, t }),
         segment === 'deploy'
-          ? h(DeploySegment, { state, t })
+          ? h(DeploySegment, { state, t, onOpenProfile: (sessionId) => { try { if (sessionId) window.sessionStorage.setItem('ascend-perf:profile-session', sessionId) } catch {} ; setSegment('tune') } })
           : h(
               'div',
               { style: { display: 'contents' } },
@@ -2854,7 +2864,29 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function ContainerServicesBlock({ state, t }) {
+    function DeployProfileSummary({ sessionId, t, onOpen }) {
+      const [report, setReport] = useState(null)
+      const [error, setError] = useState(null)
+      useEffect(() => {
+        let alive = true
+        apiGet(`/profile/sessions/${encodeURIComponent(sessionId)}/report`).then((r) => { if (alive) { setReport(r); setError(null) } }).catch((e) => { if (alive) setError(e) })
+        return () => { alive = false }
+      }, [sessionId])
+      if (error) return h('div', { style: { ...s.muted, fontSize: '10.5px', flexBasis: '100%' } }, `profile report: ${error.code ?? ''} ${error.message ?? error}`)
+      if (!report) return h('div', { style: { ...s.muted, fontSize: '10.5px', flexBasis: '100%' } }, '…')
+      const triggered = (report.rules ?? []).filter((r) => r.status === 'triggered')
+      const top = triggered[0]
+      const ev = top?.evidence?.[0]?.values ?? {}
+      return h('div', { 'data-testid': `deploy.run.instance.profileSummary.${sessionId}`, style: { flexBasis: '100%', borderTop: `1px solid ${c.borderSoft}`, marginTop: '4px', paddingTop: '6px', display: 'flex', flexDirection: 'column', gap: '3px' } },
+        h('div', { style: { fontSize: '11px', fontWeight: 600, color: c.text } }, t('deploy.run.profileSummary')),
+        top && ev.op_type ? h('div', { style: { ...s.muted, fontSize: '11px' } }, `${t('deploy.run.profileTop')}: ${ev.op_type} ${(Number(ev.recomputed_share ?? 0) * 100).toFixed(2)}%`) : h('div', { style: { ...s.muted, fontSize: '11px' } }, t('deploy.run.profileNoRules')),
+        top?.conclusion ? h('div', { style: { fontSize: '11px', color: c.text } }, top.conclusion) : null,
+        top?.actions?.[0] ? h('div', { style: { fontSize: '11px', color: '#b45309' } }, `→ ${top.actions[0]}`) : null,
+        h('button', { type: 'button', onClick: onOpen, style: { ...s.buttonGhost, fontSize: '11px', padding: '2px 8px', alignSelf: 'flex-start' } }, t('deploy.run.profileOpen')),
+      )
+    }
+
+    function ContainerServicesBlock({ state, t, onOpenProfile }) {
       const envs = (state?.envs ?? []).filter((env) => env && env.enabled !== false && env.mode === 'ssh')
       const initialDefaults = envRunDefaults(envs[0])
       const [runEnvId, setRunEnvId] = useState(envs[0]?.id ?? '')
@@ -3064,6 +3096,12 @@ window.__ModuleLoader__.load({
               )),
           ),
         ) : null,
+        envs.length > 0 ? h('div', { 'data-testid': 'deploy.run.profileBox', style: { ...s.card, padding: '8px 10px', marginBottom: '8px' } },
+          h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: c.text, fontWeight: 600 } },
+            h('input', { type: 'checkbox', checked: runProfile, onChange: (event) => setRunProfile(Boolean(event?.target?.checked)), 'data-testid': 'deploy.run.profile' }),
+            t('deploy.run.profile')),
+          h('div', { style: { ...s.muted, fontSize: '10.5px', marginTop: '4px' } }, t('deploy.run.profileHint')),
+        ) : null,
         envs.length > 0 ? h('details', { 'data-testid': 'deploy.run.advanced', style: { marginBottom: '8px' } },
           h('summary', { style: { ...s.muted, fontSize: '11px', cursor: 'pointer' } }, t('deploy.run.advanced')),
           h('div', { style: { ...s.muted, fontSize: '11px', marginTop: '8px', fontWeight: 600 } }, t('deploy.run.vllmParams')),
@@ -3080,9 +3118,6 @@ window.__ModuleLoader__.load({
             h('label', { style: { ...s.field, fontSize: '11px', flexDirection: 'row', alignItems: 'center', gap: '6px' } },
               h('input', { type: 'checkbox', checked: runEager, onChange: (event) => setRunEager(Boolean(event?.target?.checked)), 'data-testid': 'deploy.run.enforceEager' }),
               t('deploy.run.enforceEager')),
-            h('label', { style: { ...s.field, fontSize: '11px', flexDirection: 'row', alignItems: 'center', gap: '6px' } },
-              h('input', { type: 'checkbox', checked: runProfile, onChange: (event) => setRunProfile(Boolean(event?.target?.checked)), 'data-testid': 'deploy.run.profile' }),
-              t('deploy.run.profile')),
             h('span', { style: { ...s.muted, fontSize: '11px' } }, `${t('deploy.run.tp')} = ${runCards.length} chip`),
           ),
           h('div', { style: { ...s.muted, fontSize: '10.5px', marginTop: '4px' } }, t('deploy.run.profileHint')),
@@ -3134,6 +3169,7 @@ window.__ModuleLoader__.load({
                   : instance.profile.state === 'failed' ? t('deploy.run.profileFailed', { msg: instance.profile.error ?? '' })
                   : instance.profile.state === 'collecting' ? t('deploy.run.profileCollecting')
                   : instance.profile.state === 'pending' ? t('deploy.run.profilePending') : t('deploy.run.profileSkipped')) : null,
+                instance.profile?.state === 'imported' && instance.profile.session_id ? h(DeployProfileSummary, { sessionId: instance.profile.session_id, t, onOpen: () => onOpenProfile?.(instance.profile.session_id) }) : null,
               ),
               h('button', { type: 'button', 'data-testid': `deploy.run.instance.${instance.service_id}.state`, onClick: () => doState(instance), style: { ...s.buttonGhost, fontSize: '11px', padding: '3px 10px' } }, t('deploy.run.state')),
               h('button', { type: 'button', 'data-testid': `deploy.run.instance.${instance.service_id}.logs`, onClick: () => doLogs(instance), style: { ...s.buttonGhost, fontSize: '11px', padding: '3px 10px' } }, t('deploy.run.logs')),
@@ -3147,7 +3183,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function DeploySegment({ state, t }) {
+    function DeploySegment({ state, t, onOpenProfile }) {
       const envs = (state?.envs ?? []).filter((env) => env && env.enabled !== false)
       // t36：环境编号按 envs 配置列表顺序（与「环境信息」段一致；排序/过滤展示不影响编号）
       const envOrder = new Map((state?.envs ?? []).map((env, i) => [env?.id, i + 1]))
@@ -3307,7 +3343,7 @@ window.__ModuleLoader__.load({
         notice ? h(StateMsg, { title: notice.text, tone: notice.tone === 'ok' ? 'muted' : 'warn' }) : null,
         h('div', { style: { ...s.muted, fontSize: '12px' } }, t('deploy.readonly')),
         // t130：容器服务是主入口；旧版“按代码分支生成计划”收进默认收起的高级区
-        h(ContainerServicesBlock, { state, t }),
+        h(ContainerServicesBlock, { state, t, onOpenProfile }),
         h('div', { style: s.footer }, t('deploy.footer')),
       )
     }

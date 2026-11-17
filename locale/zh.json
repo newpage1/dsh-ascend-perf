@@ -555,5 +555,9 @@
   "profile.tooLarge": "输入过大（单文件 ≤4 MiB、总量 ≤8 MiB），已拒绝。",
   "profile.unsupported": "没有可识别的 profile 文件：表头指纹未命中已验证格式。",
   "profile.demoBadge": "演示",
-  "profile.importDone": "导入完成：{n} 条记录"
+  "profile.importDone": "导入完成：{n} 条记录",
+  "deploy.run.profileSummary": "Profile 与优化建议",
+  "deploy.run.profileOpen": "查看完整分析",
+  "deploy.run.profileTop": "Top 算子",
+  "deploy.run.profileNoRules": "本次采样未触发高优先级规则。"
 }
