@@ -1039,6 +1039,12 @@ export function createProfileService({ dataDir, fixturesDir = null } = {}) {
 
   const importDemo = () => {
     const names = ['op_statistic.csv', 'kernel_details.csv']
+    const bundle = join(demoDir, 'demo-profile.json')
+    if (existsSync(bundle)) {
+      const packed = JSON.parse(readFileSync(bundle, 'utf8'))
+      const files = names.map((name) => ({ name, content: String(packed[name] ?? '') })).filter((f) => f.content)
+      return importFiles({ files, mode: 'demo', isDemo: true })
+    }
     const files = names.map((name) => ({ name, content: readFileSync(join(demoDir, name), 'utf8') }))
     return importFiles({ files, mode: 'demo', isDemo: true })
   }
